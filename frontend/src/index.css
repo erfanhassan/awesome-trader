@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+@theme {
+  --color-mexc-dark: #0f172a;
+  --color-mexc-card: #1e293b;
+  --color-mexc-green: #10b981;
+  --color-mexc-red: #ef4444;
+}
+
+body {
+  @apply bg-slate-900 text-slate-100 font-sans;
+  margin: 0;
+  padding: 0;
+}

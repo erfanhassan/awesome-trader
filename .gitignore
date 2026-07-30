@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+
+# Virtual environment
+backend/venv/
+venv/
+
+# Environment & secrets
+.env
+backend/.env
+backend/credentials.json
+credentials.json
+
+# Trade data (generated at runtime)
+backend/trade_history.json
+backend/trade_history.csv
+
+# Node.js
+node_modules/
+frontend/node_modules/
+
+# Build output
+frontend/dist/
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
