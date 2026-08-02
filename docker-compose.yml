@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  trader-shihab:
+    build: .
+    container_name: trader-shihab-app
+    restart: always
+    ports:
+      - "80:8000"
+    volumes:
+      - ./backend/credentials.json:/app/backend/credentials.json:ro
+      - ./backend/.env:/app/backend/.env:ro
+      - ./backend/hmm_model.pkl:/app/backend/hmm_model.pkl
+      - ./backend/trade_history.json:/app/backend/trade_history.json

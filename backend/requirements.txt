@@ -8,3 +8,6 @@ google-auth>=2.56.0
 openai>=2.43.0
 pandas>=2.0.0
 python-dotenv>=1.2.0
+
+hmmlearn
+scikit-learn

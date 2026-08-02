@@ -5,8 +5,11 @@ import asyncio
 import json
 import os
 import uuid
+import numpy as np
 from deepseek_client import DeepSeekClient
 from google_sheets_client import GoogleSheetsClient
+from hmm_engine import HMMEngine
+from risk_engine import RiskEngine
 
 class LogicEngine:
     def __init__(self):
@@ -45,6 +48,8 @@ class LogicEngine:
         self.mexc_client = None
         self.deepseek = DeepSeekClient()
         self.sheets_client = GoogleSheetsClient()
+        self.hmm_engine = HMMEngine()
+        self.risk_engine = RiskEngine()
         self.signals = []
         self.signal_history = []
         self._load_history()
@@ -164,6 +169,12 @@ class LogicEngine:
             
             # Reset minute accumulator if a new minute started
             if td["last_minute"] != minute_ms:
+                if "delta_history" not in td:
+                    td["delta_history"] = []
+                td["delta_history"].append(td.get("delta", 0.0))
+                if len(td["delta_history"]) > 3:
+                    td["delta_history"].pop(0)
+                    
                 td["buy_vol"] = 0.0
                 td["sell_vol"] = 0.0
                 td["delta"] = 0.0
@@ -258,7 +269,23 @@ class LogicEngine:
                             hit_liq = True
                             exit_price = liq_price
                 
-                if hit_liq or hit_tp or hit_sl or hit_time:
+                bayesian_bailout = False
+                if not (hit_tp or hit_sl or hit_liq or hit_time):
+                    stats = self.risk_engine.calculate_historical_stats(self.signal_history, pos["strategy"], pos["direction"])
+                    current_delta = self.trade_data.get(symbol, {}).get("delta", 0)
+                    delta_history = self.trade_data.get(symbol, {}).get("delta_history", [])
+                    all_deltas = delta_history + [current_delta]
+                    rolling_delta = sum(all_deltas) / len(all_deltas) if all_deltas else 0
+                    
+                    avg_delta = 50000.0 # Standardize volume scale
+                    posterior_prob = self.risk_engine.calculate_live_bayesian_update(stats["win_rate"], rolling_delta, avg_delta, pos["direction"])
+                    live_ev = self.risk_engine.calculate_ev(posterior_prob, stats["avg_win"], stats["avg_loss"])
+                    if live_ev < 0:
+                        bayesian_bailout = True
+                        exit_price = data["c"]
+                        print(f"[{symbol}] DEMO BAYESIAN BAILOUT! Live EV {live_ev:.4f} < 0")
+                        
+                if hit_liq or hit_tp or hit_sl or hit_time or bayesian_bailout:
                     if hit_liq:
                         pnl = -pos["margin"]
                     else:
@@ -371,7 +398,23 @@ class LogicEngine:
                             hit_liq = True
                             exit_price = liq_price
                         
-                if hit_liq or hit_tp or hit_sl or hit_time:
+                bayesian_bailout = False
+                if not (hit_tp or hit_sl or hit_liq or hit_time):
+                    stats = self.risk_engine.calculate_historical_stats(self.signal_history, hist_pos["strategy"], hist_pos["direction"])
+                    current_delta = self.trade_data.get(symbol, {}).get("delta", 0)
+                    delta_history = self.trade_data.get(symbol, {}).get("delta_history", [])
+                    all_deltas = delta_history + [current_delta]
+                    rolling_delta = sum(all_deltas) / len(all_deltas) if all_deltas else 0
+                    
+                    avg_delta = 50000.0
+                    posterior_prob = self.risk_engine.calculate_live_bayesian_update(stats["win_rate"], rolling_delta, avg_delta, hist_pos["direction"])
+                    live_ev = self.risk_engine.calculate_ev(posterior_prob, stats["avg_win"], stats["avg_loss"])
+                    if live_ev < 0:
+                        bayesian_bailout = True
+                        exit_price = data["c"]
+                        print(f"[{symbol}] HISTORY BAYESIAN BAILOUT! Live EV {live_ev:.4f} < 0")
+                        
+                if hit_liq or hit_tp or hit_sl or hit_time or bayesian_bailout:
                     # Read margin/leverage from strategy config (fallback to defaults)
                     config = hist_pos.get("config", {})
                     margin = 5.0
@@ -461,6 +504,10 @@ class LogicEngine:
                         hist_pos["status"] = "PROFIT" if gross_pnl > 0 else "LOSS"
                         net_profit = gross_pnl - slippage_amount - fees_amount - funding_rate_amount
                         hist_pos["close_reason"] = "Time Exit"
+                    elif bayesian_bailout:
+                        hist_pos["status"] = "PROFIT" if gross_pnl > 0 else "LOSS"
+                        net_profit = gross_pnl - slippage_amount - fees_amount - funding_rate_amount
+                        hist_pos["close_reason"] = "Bayesian Bailout"
                     else:
                         hist_pos["status"] = "PROFIT" if gross_pnl > 0 else "LOSS" # SL could be BE (profit)
                         net_profit = gross_pnl - slippage_amount - fees_amount - funding_rate_amount
@@ -622,6 +669,38 @@ class LogicEngine:
         
         state["vol_ok"] = vol_surge
 
+        # HMM Features
+        vol_velocity = c_vol / avg_vol if avg_vol > 0 else 1.0
+        dist_high = abs(c_close - d1_high) / d1_high if d1_high > 0 else 1.0
+        dist_low = abs(c_close - d1_low) / d1_low if d1_low > 0 else 1.0
+        liq_proximity = min(dist_high, dist_low)
+        
+        if len(history) >= 14:
+            recent_closes = [c["c"] for c in history[-14:]]
+            volatility_std = float(np.std(recent_closes)) / price
+        else:
+            volatility_std = 0.0
+
+        current_features = [vol_velocity, liq_proximity, volatility_std]
+        
+        if "hmm_features" not in state:
+            state["hmm_features"] = []
+        state["hmm_features"].append(current_features)
+        
+        if len(state["hmm_features"]) > 1000:
+            state["hmm_features"].pop(0)
+
+        # Predict current regime
+        regime_name, regime_conf = self.hmm_engine.predict_regime(current_features)
+        state["regime"] = regime_name
+        state["regime_conf"] = regime_conf
+        
+        # Periodic Retrain (e.g. if we reach 1000 candles and not training)
+        if len(state["hmm_features"]) >= 1000 and not self.hmm_engine.is_training:
+            # We can retrain periodically or just rely on a separate script.
+            # We'll trigger a background retrain when buffer is full.
+            self.hmm_engine.retrain(state["hmm_features"])
+
         # Only evaluate on close
         if current_candle.get("is_closed", False):
             setup_state = state.get("setup_state", "WAITING")
@@ -668,57 +747,55 @@ class LogicEngine:
                 if is_red:
                     state["setup_state"] = "SHORT_SETUP_FORMED"
                     state["setup_candle"] = current_candle
-                    print(f"[{symbol}] Red candle closed. State -> SHORT_SETUP_FORMED")
+                    regime = state.get("regime", "Chop")
+                    state["ttl"] = 3 if regime == "Liquidation Cascade" else (4 if regime == "Trend" else 5)
+                    print(f"[{symbol}] Red candle closed. State -> SHORT_SETUP_FORMED (Anchor Locked, TTL: {state['ttl']})")
             
             elif setup_state == "SWEPT_LOW":
                 if is_green:
                     state["setup_state"] = "LONG_SETUP_FORMED"
                     state["setup_candle"] = current_candle
-                    print(f"[{symbol}] Green candle closed. State -> LONG_SETUP_FORMED")
+                    regime = state.get("regime", "Chop")
+                    state["ttl"] = 3 if regime == "Liquidation Cascade" else (4 if regime == "Trend" else 5)
+                    print(f"[{symbol}] Green candle closed. State -> LONG_SETUP_FORMED (Anchor Locked, TTL: {state['ttl']})")
             
             elif setup_state == "SHORT_SETUP_FORMED":
                 setup_candle = state.get("setup_candle")
                 buffer_price = setup_candle["l"] * (1 - 0.0005) # 0.05% buffer below low
-                if current_candle["c"] < buffer_price:
-                    if vol_surge:
-                        trigger_direction = "SHORT"
-                        state["setup_state"] = "TRADED_HIGH"
-                        print(f"[{symbol}] SHORT TRIGGERED! Price {current_candle['c']} < Buffer {buffer_price} and Volume Surged.")
-                    else:
-                        print(f"[{symbol}] Failed SHORT trigger: Price broke buffer, but NO VOLUME SURGE. (Vol: {c_vol}, Avg: {avg_vol})")
-                        if is_red:
-                            state["setup_candle"] = current_candle
-                        else:
-                            state["setup_state"] = "SWEPT_HIGH"
-                            print(f"[{symbol}] Setup invalidated by green candle. State -> SWEPT_HIGH.")
+                
+                state["ttl"] = state.get("ttl", 5) - 1
+                if state["ttl"] <= 0:
+                    state["setup_state"] = "WAITING"
+                    print(f"[{symbol}] TTL Expired (No Volume Break). Setup invalidated. State -> WAITING.")
                 else:
-                    if is_red:
-                        state["setup_candle"] = current_candle
-                    else:
-                        state["setup_state"] = "SWEPT_HIGH"
-                        print(f"[{symbol}] Setup invalidated by green candle. State -> SWEPT_HIGH.")
+                    if current_candle["c"] < buffer_price:
+                        if vol_surge:
+                            trigger_direction = "SHORT"
+                            state["setup_state"] = "TRADED_HIGH"
+                            print(f"[{symbol}] SHORT TRIGGERED! Price {current_candle['c']} < Buffer {buffer_price} and Volume Surged.")
+                        else:
+                            print(f"[{symbol}] Failed SHORT trigger: Price broke buffer, but NO VOLUME SURGE. (Vol: {c_vol}, Avg: {avg_vol})")
+                            state["setup_state"] = "WAITING"
+                            print(f"[{symbol}] Setup invalidated by early break without volume. State -> WAITING.")
             
             elif setup_state == "LONG_SETUP_FORMED":
                 setup_candle = state.get("setup_candle")
                 buffer_price = setup_candle["h"] * (1 + 0.0005) # 0.05% buffer above high
-                if current_candle["c"] > buffer_price:
-                    if vol_surge:
-                        trigger_direction = "LONG"
-                        state["setup_state"] = "TRADED_LOW"
-                        print(f"[{symbol}] LONG TRIGGERED! Price {current_candle['c']} > Buffer {buffer_price} and Volume Surged.")
-                    else:
-                        print(f"[{symbol}] Failed LONG trigger: Price broke buffer, but NO VOLUME SURGE. (Vol: {c_vol}, Avg: {avg_vol})")
-                        if is_green:
-                            state["setup_candle"] = current_candle
-                        else:
-                            state["setup_state"] = "SWEPT_LOW"
-                            print(f"[{symbol}] Setup invalidated by red candle. State -> SWEPT_LOW.")
+                
+                state["ttl"] = state.get("ttl", 5) - 1
+                if state["ttl"] <= 0:
+                    state["setup_state"] = "WAITING"
+                    print(f"[{symbol}] TTL Expired (No Volume Break). Setup invalidated. State -> WAITING.")
                 else:
-                    if is_green:
-                        state["setup_candle"] = current_candle
-                    else:
-                        state["setup_state"] = "SWEPT_LOW"
-                        print(f"[{symbol}] Setup invalidated by red candle. State -> SWEPT_LOW.")
+                    if current_candle["c"] > buffer_price:
+                        if vol_surge:
+                            trigger_direction = "LONG"
+                            state["setup_state"] = "TRADED_LOW"
+                            print(f"[{symbol}] LONG TRIGGERED! Price {current_candle['c']} > Buffer {buffer_price} and Volume Surged.")
+                        else:
+                            print(f"[{symbol}] Failed LONG trigger: Price broke buffer, but NO VOLUME SURGE. (Vol: {c_vol}, Avg: {avg_vol})")
+                            state["setup_state"] = "WAITING"
+                            print(f"[{symbol}] Setup invalidated by early break without volume. State -> WAITING.")
 
             if trigger_direction:
                 # Apply user-facing filter toggles as global gates
@@ -732,12 +809,27 @@ class LogicEngine:
                 setup_id = str(uuid.uuid4())
                 setup_candle = state.get("setup_candle")
                 
-                for strategy in getattr(self, "active_strategies", []):
-                    strategy_name = strategy["name"]
-                    already_signaled = any(s.get("timestamp_ms") == current_candle["t"] and s.get("strategy") == strategy_name for s in self.signal_history)
-                    if already_signaled or is_historical:
-                        continue
-                        
+                regime = state.get("regime", "Chop")
+                
+                if regime == "Liquidation Cascade":
+                    if trigger_direction == "SHORT" and htf_bullish:
+                        print(f"[{symbol}] ORCHESTRATOR VETO: Blocked SHORT during Bullish Liquidation Cascade.")
+                        return
+                    if trigger_direction == "LONG" and htf_bearish:
+                        print(f"[{symbol}] ORCHESTRATOR VETO: Blocked LONG during Bearish Liquidation Cascade.")
+                        return
+                    strategy_name = "S0_Baseline_400x"
+                elif regime == "Trend":
+                    strategy_name = "S6_HTF_Aligned"
+                else: # Chop
+                    strategy_name = "S11_Fixed_Pct_TP"
+                    
+                strategy = next((s for s in getattr(self, "active_strategies", []) if s["name"] == strategy_name), None)
+                if not strategy:
+                    return
+
+                already_signaled = any(s.get("timestamp_ms") == current_candle["t"] and s.get("strategy") == strategy_name for s in self.signal_history)
+                if not (already_signaled or is_historical):
                     if trigger_direction == "SHORT":
                         valid = True
                         if strategy["htf"] and not htf_bearish: valid = False
@@ -754,7 +846,14 @@ class LogicEngine:
                             if not fvg or not (fvg[0] <= c_high <= fvg[1]): valid = False
                         
                         if valid:
-                            await self._trigger_signal(symbol, "SHORT", current_candle, setup_candle, avg_vol, state["target_tp"], strategy, setup_id)
+                            stats = self.risk_engine.calculate_historical_stats(self.signal_history, strategy_name, "SHORT")
+                            ev = self.risk_engine.calculate_ev(stats["win_rate"], stats["avg_win"], stats["avg_loss"])
+                            if ev <= 0 and not is_historical:
+                                print(f"[{symbol}] EV VETO: EV is {ev:.4f} <= 0. Blocking trade.")
+                            else:
+                                hmm_conf = state.get("regime_conf", 0.5)
+                                kelly_fraction = self.risk_engine.calculate_kelly_fraction(stats["win_rate"], stats["avg_win"], stats["avg_loss"], hmm_conf)
+                                await self._trigger_signal(symbol, "SHORT", current_candle, setup_candle, avg_vol, state["target_tp"], strategy, setup_id, kelly_fraction)
 
                     elif trigger_direction == "LONG":
                         valid = True
@@ -772,8 +871,15 @@ class LogicEngine:
                             if not fvg or not (fvg[0] <= c_low <= fvg[1]): valid = False
                         
                         if valid:
-                            await self._trigger_signal(symbol, "LONG", current_candle, setup_candle, avg_vol, state["target_tp"], strategy, setup_id)
-    async def _trigger_signal(self, symbol, direction, trigger_candle, setup_candle, avg_vol, target_tp, strategy=None, setup_id=None):
+                            stats = self.risk_engine.calculate_historical_stats(self.signal_history, strategy_name, "LONG")
+                            ev = self.risk_engine.calculate_ev(stats["win_rate"], stats["avg_win"], stats["avg_loss"])
+                            if ev <= 0 and not is_historical:
+                                print(f"[{symbol}] EV VETO: EV is {ev:.4f} <= 0. Blocking trade.")
+                            else:
+                                hmm_conf = state.get("regime_conf", 0.5)
+                                kelly_fraction = self.risk_engine.calculate_kelly_fraction(stats["win_rate"], stats["avg_win"], stats["avg_loss"], hmm_conf)
+                                await self._trigger_signal(symbol, "LONG", current_candle, setup_candle, avg_vol, state["target_tp"], strategy, setup_id, kelly_fraction)
+    async def _trigger_signal(self, symbol, direction, trigger_candle, setup_candle, avg_vol, target_tp, strategy=None, setup_id=None, kelly_fraction=1.0):
         if strategy is None:
             strategy = {"name": "S0_Baseline_400x", "leverage": 400, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False}
         strategy_name = strategy["name"]
@@ -918,7 +1024,8 @@ class LogicEngine:
             
         if self.shihab_demo_active:
             # Prevent opening if not enough balance
-            if self.demo_balance >= self.demo_invest_amount:
+            invest_amount = self.demo_invest_amount * kelly_fraction if kelly_fraction < 1.0 else self.demo_invest_amount
+            if self.demo_balance >= invest_amount:
                 demo_pos = {
                     "symbol": symbol,
                     "direction": direction,
@@ -927,7 +1034,7 @@ class LogicEngine:
                     "tp": tp,
                     "tp1": tp1,
                     "scaled_out": False,
-                    "margin": self.demo_balance if strategy.get("cross_margin") else self.demo_invest_amount,
+                    "margin": self.demo_balance if strategy.get("cross_margin") else invest_amount,
                     "leverage": computed_leverage,
                     "strategy": strategy_name,
                     "config": strategy,

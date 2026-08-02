@@ -3,9 +3,11 @@ from google.oauth2.service_account import Credentials
 import os
 import json
 import time
+import threading
 
 class GoogleSheetsClient:
     def __init__(self, credentials_path="credentials.json", sheet_id="1OCrTQSLiJ4TZ6cFV13_hj42L02TDzU2JXu329DT6OXE"):
+        self.lock = threading.Lock()
         self.scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
@@ -57,6 +59,7 @@ class GoogleSheetsClient:
             return self.sheet
         try:
             sheet = self._execute_with_retry(self.doc.worksheet, strategy_name)
+            self._ensure_headers(sheet)
         except gspread.exceptions.WorksheetNotFound:
             sheet = self._execute_with_retry(self.doc.add_worksheet, title=strategy_name, rows="1000", cols="20")
             self._ensure_headers(sheet)
@@ -91,87 +94,102 @@ class GoogleSheetsClient:
         if not self.enabled or not self.doc:
             return
 
-        try:
-            strategy_name = hist_signal.get("strategy", "S0_Baseline")
-            sheet = self._get_or_create_worksheet(strategy_name)
-            row_data = [
-                hist_signal.get("id", ""),
-                self._format_bd_time(hist_signal.get("timestamp", "")),
-                hist_signal.get("symbol", ""),
-                hist_signal.get("direction", ""),
-                hist_signal.get("entry", ""),
-                hist_signal.get("sl", ""),
-                hist_signal.get("tp", ""),
-                hist_signal.get("status", "PENDING"),
-                hist_signal.get("raw_profit", ""),
-                hist_signal.get("pnl", ""),
-                self._format_bd_time(hist_signal.get("close_time", "")),
-                hist_signal.get("exit_price", ""),
-                hist_signal.get("slippage", ""),
-                hist_signal.get("fees", ""),
-                hist_signal.get("funding_rate", ""),
-                hist_signal.get("net_profit", ""),
-                hist_signal.get("close_reason", ""),
-                hist_signal.get("duration", ""),
-                hist_signal.get("max_drawdown", ""),
-                hist_signal.get("strategy", "S0_Baseline"),
-                hist_signal.get("strategy_metric") or ""
-            ]
-            self._execute_with_retry(sheet.append_row, row_data)
-            self._update_net_profit_sheet(hist_signal)
-        except Exception as e:
-            print(f"Error appending trade to Google Sheet: {e}")
+        with self.lock:
+            try:
+                strategy_name = hist_signal.get("strategy", "S0_Baseline")
+                sheet = self._get_or_create_worksheet(strategy_name)
+                
+                trade_id = str(hist_signal.get("id", ""))
+                if trade_id:
+                    all_rows = self._execute_with_retry(sheet.get_all_values)
+                    for i in range(len(all_rows) - 1, -1, -1):
+                        if all_rows[i] and str(all_rows[i][0]) == trade_id:
+                            # Prevent duplicate (twin) entries
+                            return
+                
+                row_data = [
+                    hist_signal.get("id", ""),
+                    self._format_bd_time(hist_signal.get("timestamp", "")),
+                    hist_signal.get("symbol", ""),
+                    hist_signal.get("direction", ""),
+                    hist_signal.get("entry", ""),
+                    hist_signal.get("sl", ""),
+                    hist_signal.get("tp", ""),
+                    hist_signal.get("status", "PENDING"),
+                    hist_signal.get("raw_profit", ""),
+                    hist_signal.get("pnl", ""),
+                    self._format_bd_time(hist_signal.get("close_time", "")),
+                    hist_signal.get("exit_price", ""),
+                    hist_signal.get("slippage", ""),
+                    hist_signal.get("fees", ""),
+                    hist_signal.get("funding_rate", ""),
+                    hist_signal.get("net_profit", ""),
+                    hist_signal.get("close_reason", ""),
+                    hist_signal.get("duration", ""),
+                    hist_signal.get("max_drawdown", ""),
+                    hist_signal.get("strategy", "S0_Baseline"),
+                    hist_signal.get("strategy_metric") or ""
+                ]
+                self._execute_with_retry(sheet.append_row, row_data)
+                self._update_net_profit_sheet_locked(hist_signal)
+            except Exception as e:
+                print(f"Error appending trade to Google Sheet: {e}")
 
     def update_trade(self, hist_signal):
         if not self.enabled or not self.doc:
             return
 
-        try:
-            strategy_name = hist_signal.get("strategy", "S0_Baseline")
-            sheet = self._get_or_create_worksheet(strategy_name)
-            
-            trade_id = hist_signal.get("id")
-            if not trade_id:
-                return
-
-            # Find the row with this ID
-            # get_all_values() returns list of lists (rows)
-            all_rows = self._execute_with_retry(sheet.get_all_values)
-            
-            row_index = -1
-            # Start searching from the end as it's likely a recent trade
-            for i in range(len(all_rows) - 1, -1, -1):
-                if all_rows[i] and all_rows[i][0] == trade_id:
-                    row_index = i + 1 # gspread is 1-indexed
-                    break
-
-            if row_index != -1:
-                # Update specific columns
-                updates = [
-                    {'range': f'H{row_index}', 'values': [[hist_signal.get("status")]]},
-                    {'range': f'I{row_index}', 'values': [[hist_signal.get("raw_profit", "")]]},
-                    {'range': f'J{row_index}', 'values': [[hist_signal.get("pnl")]]},
-                    {'range': f'K{row_index}', 'values': [[self._format_bd_time(hist_signal.get("close_time"))]]},
-                    {'range': f'L{row_index}', 'values': [[hist_signal.get("exit_price")]]},
-                    {'range': f'M{row_index}', 'values': [[hist_signal.get("slippage", "")]]},
-                    {'range': f'N{row_index}', 'values': [[hist_signal.get("fees", "")]]},
-                    {'range': f'O{row_index}', 'values': [[hist_signal.get("funding_rate", "")]]},
-                    {'range': f'P{row_index}', 'values': [[hist_signal.get("net_profit", "")]]},
-                    {'range': f'Q{row_index}', 'values': [[hist_signal.get("close_reason", "")]]},
-                    {'range': f'R{row_index}', 'values': [[hist_signal.get("duration", "")]]},
-                    {'range': f'S{row_index}', 'values': [[hist_signal.get("max_drawdown", "")]]}
-                ]
-                self._execute_with_retry(sheet.batch_update, updates)
+        with self.lock:
+            try:
+                strategy_name = hist_signal.get("strategy", "S0_Baseline")
+                sheet = self._get_or_create_worksheet(strategy_name)
                 
-                # Update the Net Profit comparison sheet with final results
-                self._update_net_profit_sheet(hist_signal)
-            else:
-                print(f"Trade ID {trade_id} not found in Google Sheet to update.")
+                trade_id = hist_signal.get("id")
+                if not trade_id:
+                    return
 
-        except Exception as e:
-            print(f"Error updating trade in Google Sheet: {e}")
+                # Find the row with this ID
+                # get_all_values() returns list of lists (rows)
+                all_rows = self._execute_with_retry(sheet.get_all_values)
+                
+                row_index = -1
+                # Start searching from the end as it's likely a recent trade
+                for i in range(len(all_rows) - 1, -1, -1):
+                    if all_rows[i] and all_rows[i][0] == trade_id:
+                        row_index = i + 1 # gspread is 1-indexed
+                        break
+
+                if row_index != -1:
+                    # Update specific columns
+                    updates = [
+                        {'range': f'H{row_index}', 'values': [[hist_signal.get("status")]]},
+                        {'range': f'I{row_index}', 'values': [[hist_signal.get("raw_profit", "")]]},
+                        {'range': f'J{row_index}', 'values': [[hist_signal.get("pnl")]]},
+                        {'range': f'K{row_index}', 'values': [[self._format_bd_time(hist_signal.get("close_time"))]]},
+                        {'range': f'L{row_index}', 'values': [[hist_signal.get("exit_price")]]},
+                        {'range': f'M{row_index}', 'values': [[hist_signal.get("slippage", "")]]},
+                        {'range': f'N{row_index}', 'values': [[hist_signal.get("fees", "")]]},
+                        {'range': f'O{row_index}', 'values': [[hist_signal.get("funding_rate", "")]]},
+                        {'range': f'P{row_index}', 'values': [[hist_signal.get("net_profit", "")]]},
+                        {'range': f'Q{row_index}', 'values': [[hist_signal.get("close_reason", "")]]},
+                        {'range': f'R{row_index}', 'values': [[hist_signal.get("duration", "")]]},
+                        {'range': f'S{row_index}', 'values': [[hist_signal.get("max_drawdown", "")]]}
+                    ]
+                    self._execute_with_retry(sheet.batch_update, updates)
+                    
+                    # Update the Net Profit comparison sheet with final results
+                    self._update_net_profit_sheet_locked(hist_signal)
+                else:
+                    print(f"Trade ID {trade_id} not found in Google Sheet to update.")
+
+            except Exception as e:
+                print(f"Error updating trade in Google Sheet: {e}")
 
     def _update_net_profit_sheet(self, hist_signal):
+        with self.lock:
+            self._update_net_profit_sheet_locked(hist_signal)
+            
+    def _update_net_profit_sheet_locked(self, hist_signal):
         if not self.enabled or not self.doc:
             return
         try:

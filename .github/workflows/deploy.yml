@@ -1,0 +1,28 @@
+name: Deploy to GCP VM
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to VM via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.VM_IP }}
+          username: ubuntu
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            # Clone repo if it doesn't exist, else pull
+            if [ ! -d "trader-shihab" ]; then
+              git clone https://github.com/erfanhassan/probabilitytradingshihabgooglehost.git trader-shihab
+            fi
+            cd trader-shihab
+            git pull origin main
+            
+            # Restart docker container
+            sudo docker-compose down
+            sudo docker-compose up -d --build
