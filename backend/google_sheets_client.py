@@ -201,10 +201,17 @@ class GoogleSheetsClient:
                 "S8_RSI_Div", "S9_TimeExit", "S10_FVG_Conf"
             ]
             curr_headers = self._execute_with_retry(sheet.row_values, 1)
-            if curr_headers != headers:
-                if not curr_headers:
-                    self._execute_with_retry(sheet.append_row, headers)
-                else:
+            if not curr_headers:
+                self._execute_with_retry(sheet.append_row, headers)
+            else:
+                # Merge existing headers with hardcoded ones to avoid dropping dynamic ones on restart
+                updated = False
+                for h in headers:
+                    if h not in curr_headers:
+                        curr_headers.append(h)
+                        updated = True
+                headers = curr_headers
+                if updated:
                     cells = sheet.range(1, 1, 1, len(headers))
                     for i, c in enumerate(cells):
                         c.value = headers[i]
@@ -222,12 +229,20 @@ class GoogleSheetsClient:
                     break
                     
             strategy_name = hist_signal.get("strategy")
+            
             try:
                 col_index = headers.index(strategy_name) + 1
             except ValueError:
-                return
+                # Strategy not in headers, let's append it dynamically
+                headers.append(strategy_name)
+                # Update the headers in the sheet
+                cells = sheet.range(1, 1, 1, len(headers))
+                for i, c in enumerate(cells):
+                    c.value = headers[i]
+                self._execute_with_retry(sheet.update_cells, cells)
+                col_index = headers.index(strategy_name) + 1
                 
-            col_letter = chr(64 + col_index)
+            col_letter = chr(64 + col_index) if col_index <= 26 else f"{chr(64 + ((col_index - 1) // 26))}{chr(64 + ((col_index - 1) % 26 + 1))}"
             net_profit_val = hist_signal.get("net_profit", "")
             if hist_signal.get("status") == "PENDING" and net_profit_val == 0.0:
                 net_profit_val = "Running..."
