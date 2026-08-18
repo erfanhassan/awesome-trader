@@ -593,37 +593,38 @@ class LogicEngine:
 
     def _evaluate_ema(self, symbol, interval):
         history = self.kline_data[symbol].get(interval, [])
-        if len(history) < 50:
-            return # Not enough data
-        
-        ema20 = history[0]["c"]
-        ema50 = history[0]["c"]
-        k20 = 2 / (20 + 1)
-        k50 = 2 / (50 + 1)
-        
-        for c in history[1:]:
-            price = c["c"]
-            ema20 = (price * k20) + (ema20 * (1 - k20))
-            ema50 = (price * k50) + (ema50 * (1 - k50))
+        if not history:
+            return
+
+        if len(history) >= 50:
+            ema20 = history[0]["c"]
+            ema50 = history[0]["c"]
+            k20 = 2 / (20 + 1)
+            k50 = 2 / (50 + 1)
             
-        last_ema20 = ema20
-        last_ema50 = ema50
-        
-        is_bullish = bool(last_ema20 > last_ema50)
-        
-        interval_map = {
-            "Min1": "1m",
-            "Min15": "15m",
-            "Min60": "1h",
-            "Hour4": "4h",
-            "Day1": "1d",
-        }
-        prefix = interval_map.get(interval, interval)
-        
-        self.market_state[symbol][f"{prefix}_bullish"] = is_bullish
-        self.market_state[symbol][f"{prefix}_ema20"] = float(last_ema20)
-        self.market_state[symbol][f"{prefix}_ema50"] = float(last_ema50)
-        
+            for c in history[1:]:
+                price = c["c"]
+                ema20 = (price * k20) + (ema20 * (1 - k20))
+                ema50 = (price * k50) + (ema50 * (1 - k50))
+                
+            last_ema20 = ema20
+            last_ema50 = ema50
+            
+            is_bullish = bool(last_ema20 > last_ema50)
+            
+            interval_map = {
+                "Min1": "1m",
+                "Min15": "15m",
+                "Min60": "1h",
+                "Hour4": "4h",
+                "Day1": "1d",
+            }
+            prefix = interval_map.get(interval, interval)
+            
+            self.market_state[symbol][f"{prefix}_bullish"] = is_bullish
+            self.market_state[symbol][f"{prefix}_ema20"] = float(last_ema20)
+            self.market_state[symbol][f"{prefix}_ema50"] = float(last_ema50)
+            
         # Calculate RSI 14 for 1m (using last 14 candles)
         if interval == "Min1" and len(history) >= 15:
             gains = 0
@@ -658,9 +659,13 @@ class LogicEngine:
 
         # Fix 5: Compute 4H session high/low from the 2 most recent completed 4H candles
         # This gives a fresh, actionable sweep level that updates every 4 hours (much more frequent than 1D)
-        if interval == "Hour4" and len(history) >= 3:
-            self.market_state[symbol]["4h_session_high"] = max(history[-3]["h"], history[-2]["h"])
-            self.market_state[symbol]["4h_session_low"]  = min(history[-3]["l"], history[-2]["l"])
+        if interval == "Hour4":
+            if len(history) >= 3:
+                self.market_state[symbol]["4h_session_high"] = max(history[-3]["h"], history[-2]["h"])
+                self.market_state[symbol]["4h_session_low"]  = min(history[-3]["l"], history[-2]["l"])
+            elif len(history) >= 1:
+                self.market_state[symbol]["4h_session_high"] = max(c["h"] for c in history)
+                self.market_state[symbol]["4h_session_low"]  = min(c["l"] for c in history)
 
 
 
@@ -1210,7 +1215,7 @@ class LogicEngine:
                     tp = fixed_2R_tp
                 tp1 = trigger_candle["c"] + risk  # Scale-out TP1 at 1R
 
-        vol_ratio = setup_candle["v"] / avg_vol if avg_vol > 0 else 0
+        vol_ratio = setup_candle.get("v", 0) / avg_vol if (avg_vol > 0 and setup_candle) else 0
 
         context = {
             "symbol": symbol,

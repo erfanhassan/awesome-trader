@@ -13,7 +13,7 @@ const TIMEFRAMES = [
 export default function ChartArea({ symbol, state, tradeState, filterStates = {}, signals = [], signalHistory = [] }) {
   const chartContainerRef = useRef();
   const chartRef = useRef(null);
-  const seriesRef = useRef({ candle: null, d1HighLine: null, d1LowLine: null });
+  const seriesRef = useRef({ candle: null, sessionHighLine: null, sessionLowLine: null });
   const [activeTimeframe, setActiveTimeframe] = useState(TIMEFRAMES[0]);
   const [selectedSignal, setSelectedSignal] = useState(null);
   const pollRef = useRef(null);
@@ -68,8 +68,8 @@ export default function ChartArea({ symbol, state, tradeState, filterStates = {}
 
     seriesRef.current = {
       candle: candleSeries,
-      d1HighLine: null,
-      d1LowLine: null,
+      sessionHighLine: null,
+      sessionLowLine: null,
     };
 
     return () => {
@@ -141,7 +141,7 @@ export default function ChartArea({ symbol, state, tradeState, filterStates = {}
     };
   }, [fetchKlines]);
 
-  // Evaluate markers and 1D lines based on current state + filters
+  // Evaluate markers and 4H Session sweep lines based on current state + filters
   useEffect(() => {
     if (!state || !state[symbol] || !seriesRef.current.candle) return;
 
@@ -149,36 +149,45 @@ export default function ChartArea({ symbol, state, tradeState, filterStates = {}
     const deduped = lastCandlesRef.current;
     if (deduped.length < 2) return;
 
-    const d1High = symbolState['1d_high'];
-    const d1Low = symbolState['1d_low'];
+    // Fix 5: Primary sweep levels are 4H Session High / Low (fallback to 1D if 4H not yet calculated)
+    const sessionHigh = symbolState['4h_session_high'] || symbolState['1d_high'];
+    const sessionLow = symbolState['4h_session_low'] || symbolState['1d_low'];
+    const is4HHigh = Boolean(symbolState['4h_session_high']);
+    const is4HLow = Boolean(symbolState['4h_session_low']);
 
-    if (d1High) {
-      if (!seriesRef.current.d1HighLine) {
-        seriesRef.current.d1HighLine = seriesRef.current.candle.createPriceLine({
-          price: d1High,
+    if (sessionHigh) {
+      if (!seriesRef.current.sessionHighLine) {
+        seriesRef.current.sessionHighLine = seriesRef.current.candle.createPriceLine({
+          price: sessionHigh,
           color: '#ef4444',
           lineWidth: 1,
           lineStyle: 2, // Dashed
           axisLabelVisible: true,
-          title: '1D High',
+          title: is4HHigh ? '4H High' : '1D High',
         });
       } else {
-        seriesRef.current.d1HighLine.applyOptions({ price: d1High });
+        seriesRef.current.sessionHighLine.applyOptions({ 
+          price: sessionHigh,
+          title: is4HHigh ? '4H High' : '1D High'
+        });
       }
     }
 
-    if (d1Low) {
-      if (!seriesRef.current.d1LowLine) {
-        seriesRef.current.d1LowLine = seriesRef.current.candle.createPriceLine({
-          price: d1Low,
+    if (sessionLow) {
+      if (!seriesRef.current.sessionLowLine) {
+        seriesRef.current.sessionLowLine = seriesRef.current.candle.createPriceLine({
+          price: sessionLow,
           color: '#10b981',
           lineWidth: 1,
           lineStyle: 2, // Dashed
           axisLabelVisible: true,
-          title: '1D Low',
+          title: is4HLow ? '4H Low' : '1D Low',
         });
       } else {
-        seriesRef.current.d1LowLine.applyOptions({ price: d1Low });
+        seriesRef.current.sessionLowLine.applyOptions({ 
+          price: sessionLow,
+          title: is4HLow ? '4H Low' : '1D Low'
+        });
       }
     }
 
@@ -417,16 +426,16 @@ export default function ChartArea({ symbol, state, tradeState, filterStates = {}
               <RefreshCw size={14} />
             </button>
           </div>
-          {/* Display 1D High and 1D Low Values clearly */}
-          {symbolState['1d_high'] > 0 && (
+          {/* Display 4H Session High and 4H Session Low Values clearly */}
+          {(symbolState['4h_session_high'] > 0 || symbolState['1d_high'] > 0) && (
             <div className="flex items-center gap-2 ml-4 text-[11px] font-mono">
                <div className="flex items-center gap-1 text-red-400">
-                 <span className="text-slate-500">1D High:</span>
-                 {symbolState['1d_high'].toFixed(1)}
+                 <span className="text-slate-500">{symbolState['4h_session_high'] > 0 ? '4H High:' : '1D High:'}</span>
+                 {(symbolState['4h_session_high'] || symbolState['1d_high']).toFixed(1)}
                </div>
                <div className="flex items-center gap-1 text-emerald-400">
-                 <span className="text-slate-500">1D Low:</span>
-                 {symbolState['1d_low'].toFixed(1)}
+                 <span className="text-slate-500">{symbolState['4h_session_low'] > 0 ? '4H Low:' : '1D Low:'}</span>
+                 {(symbolState['4h_session_low'] || symbolState['1d_low']).toFixed(1)}
                </div>
             </div>
           )}
