@@ -7,13 +7,17 @@ __pycache__/
 
 # Virtual environment
 backend/venv/
+backend/.venv/
+.venv/
 venv/
 
 # Environment & secrets
 .env
+*.env
 backend/.env
 backend/credentials.json
 credentials.json
+*credentials*.json
 
 # Trade data (generated at runtime)
 backend/trade_history.json

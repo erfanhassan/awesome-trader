@@ -1,8 +1,16 @@
 import { useState } from 'react';
-import { Clock, CheckCircle2, XCircle, History, Trash2 } from 'lucide-react';
+import { Clock, CheckCircle2, XCircle, History, Trash2, Copy, Check } from 'lucide-react';
 
 const SignalHistory = ({ history, marketData, onClearHistory }) => {
   const [selectedStrategy, setSelectedStrategy] = useState('ALL');
+  const [copiedId, setCopiedId] = useState(null);
+
+  const handleCopyId = (id) => {
+    if (!id) return;
+    navigator.clipboard.writeText(id);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
   
   if (!history || history.length === 0) {
     return (
@@ -83,7 +91,7 @@ const SignalHistory = ({ history, marketData, onClearHistory }) => {
           
           return (
             <div key={trade.id} className="bg-slate-900/50 rounded-lg p-3 border border-slate-700/50 hover:border-slate-600 transition-colors">
-              <div className="flex justify-between items-start mb-2">
+              <div className="flex justify-between items-start mb-1.5">
                 <div className="flex items-center gap-2">
                   <span className={`font-bold ${trade.direction === 'LONG' ? 'text-emerald-400' : 'text-rose-400'}`}>
                     {trade.direction}
@@ -107,8 +115,25 @@ const SignalHistory = ({ history, marketData, onClearHistory }) => {
                   </span>
                 </div>
               </div>
+
+              {/* Sheet ID Match Banner */}
+              {trade.id && (
+                <div className="flex items-center justify-between bg-slate-950/60 px-2 py-1 rounded border border-slate-800/80 mb-2">
+                  <div className="flex items-center gap-1.5 overflow-hidden">
+                    <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">Sheet ID:</span>
+                    <span className="font-mono text-[10px] text-sky-400 truncate select-all">{trade.id}</span>
+                  </div>
+                  <button
+                    onClick={() => handleCopyId(trade.id)}
+                    className="text-slate-400 hover:text-sky-400 p-0.5 rounded ml-2 flex-shrink-0 transition-colors"
+                    title="Copy Google Sheet ID"
+                  >
+                    {copiedId === trade.id ? <Check size={11} className="text-emerald-400" /> : <Copy size={11} />}
+                  </button>
+                </div>
+              )}
               
-              <div className="grid grid-cols-3 gap-2 text-xs text-slate-400 mt-2">
+              <div className="grid grid-cols-3 gap-2 text-xs text-slate-400">
                 <div>
                   <span className="block text-slate-500 mb-0.5">Entry</span>
                   <span className="font-mono">{trade.entry?.toFixed(2)}</span>

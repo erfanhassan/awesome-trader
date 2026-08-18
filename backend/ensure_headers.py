@@ -3,8 +3,8 @@ from google.oauth2.service_account import Credentials
 import os
 
 def ensure_headers_on_all():
-    credentials_path = "credentials.json"
-    sheet_id = "1OCrTQSLiJ4TZ6cFV13_hj42L02TDzU2JXu329DT6OXE"
+    credentials_path = os.getenv("GOOGLE_CREDENTIALS_PATH", "credentials.json")
+    sheet_id = os.getenv("GOOGLE_SHEET_ID", "1CfF5CZ9yMcp2tqsigHRKz0lA6B_3UKfwjGVU3b1ACmk")
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"

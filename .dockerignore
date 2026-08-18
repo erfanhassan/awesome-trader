@@ -1,7 +1,15 @@
 node_modules/
+frontend/node_modules/
 .git/
 .env
+*.env
+backend/.env
+credentials.json
+backend/credentials.json
+*credentials*.json
 backend/venv/
+backend/.venv/
+.venv/
 backend/__pycache__/
 backend/trade_history.json
 frontend/dist/

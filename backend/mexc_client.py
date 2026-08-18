@@ -129,6 +129,26 @@ class MEXCClient:
         # Start background loops
         asyncio.create_task(self._ws_loop())
         asyncio.create_task(self._trades_polling_loop())
+        asyncio.create_task(self._funding_rate_loop())  # Fix 7: funding rate bias filter
+
+    async def _funding_rate_loop(self):
+        """Fix 7: Poll funding rates every 15 minutes and store in market_state.
+        High positive funding = market overleveraged LONG → contrarian bias to SHORT.
+        High negative funding = market overleveraged SHORT → contrarian bias to LONG.
+        """
+        while True:
+            try:
+                for sym in list(self.active_symbols):
+                    try:
+                        rate = await self.get_funding_rate(sym)
+                        if sym in self.logic_engine.market_state:
+                            self.logic_engine.market_state[sym]["funding_rate"] = rate
+                            logger.info(f"[{sym}] Funding rate updated: {rate:.6f}")
+                    except Exception as e:
+                        logger.error(f"Funding rate fetch error for {sym}: {e}")
+            except Exception as e:
+                logger.error(f"Funding rate loop error: {e}")
+            await asyncio.sleep(900)  # Poll every 15 minutes
 
     async def _trades_polling_loop(self):
         while True:

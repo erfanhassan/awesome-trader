@@ -4,23 +4,27 @@ import os
 import json
 import time
 import threading
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class GoogleSheetsClient:
-    def __init__(self, credentials_path="credentials.json", sheet_id="1OCrTQSLiJ4TZ6cFV13_hj42L02TDzU2JXu329DT6OXE"):
+    def __init__(self, credentials_path=None, sheet_id=None):
         self.lock = threading.Lock()
         self.scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
         ]
-        self.sheet_id = sheet_id
+        self.credentials_path = credentials_path or os.getenv("GOOGLE_CREDENTIALS_PATH", "credentials.json")
+        self.sheet_id = sheet_id or os.getenv("GOOGLE_SHEET_ID", "1CfF5CZ9yMcp2tqsigHRKz0lA6B_3UKfwjGVU3b1ACmk")
         self.client = None
         self.sheet = None
         self.enabled = False
 
-        if os.path.exists(credentials_path):
+        if os.path.exists(self.credentials_path):
             try:
                 credentials = Credentials.from_service_account_file(
-                    credentials_path, scopes=self.scopes
+                    self.credentials_path, scopes=self.scopes
                 )
                 self.client = gspread.authorize(credentials)
                 self.doc = self.client.open_by_key(self.sheet_id)
@@ -59,10 +63,12 @@ class GoogleSheetsClient:
             return self.sheet
         try:
             sheet = self._execute_with_retry(self.doc.worksheet, strategy_name)
-            self._ensure_headers(sheet)
+            if strategy_name != "Net Profit":
+                self._ensure_headers(sheet)
         except gspread.exceptions.WorksheetNotFound:
-            sheet = self._execute_with_retry(self.doc.add_worksheet, title=strategy_name, rows="1000", cols="20")
-            self._ensure_headers(sheet)
+            sheet = self._execute_with_retry(self.doc.add_worksheet, title=strategy_name, rows="1000", cols="35")
+            if strategy_name != "Net Profit":
+                self._ensure_headers(sheet)
         return sheet
 
     def _ensure_headers(self, sheet=None):

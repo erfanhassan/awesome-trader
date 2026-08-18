@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { createChart, CrosshairMode } from 'lightweight-charts';
-import { TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
+import { TrendingUp, TrendingDown, RefreshCw, Copy, Check, X } from 'lucide-react';
 
 const TIMEFRAMES = [
   { label: '1m', key: 'Min1', trendKey: '1m' },
@@ -183,45 +183,122 @@ export default function ChartArea({ symbol, state, tradeState, filterStates = {}
     }
 
     // --- Compute Markers based on actual Backend Signals ---
-    if (activeTimeframe.key === 'Min1') {
-      const markers = [];
-      const allSignals = [...(signals || []), ...(signalHistory || [])].filter(s => s.symbol === symbol);
+    const markers = [];
+    const allSignals = [...(signals || []), ...(signalHistory || [])].filter(s => s.symbol === symbol);
+    
+    const tfInSeconds = {
+      'Min1': 60,
+      'Min15': 900,
+      'Min60': 3600,
+      'Hour4': 14400,
+      'Day1': 86400
+    }[activeTimeframe.key] || 60;
+    
+    const uniqueSignalTimes = new Set();
+    
+    allSignals.forEach(signal => {
+      if (!signal.timestamp_ms && !signal.timestamp) return;
       
-      const uniqueSignalTimes = new Set();
+      const rawTimeSeconds = signal.timestamp_ms 
+        ? Math.floor(signal.timestamp_ms / 1000)
+        : Math.floor(new Date(signal.timestamp).getTime() / 1000);
       
-      allSignals.forEach(signal => {
-        if (!signal.timestamp_ms) return;
+      // Align marker time to candle boundary of active timeframe
+      const candleBucketTime = Math.floor(rawTimeSeconds / tfInSeconds) * tfInSeconds;
+      const markerKey = `${candleBucketTime}-${signal.id || signal.direction}`;
+      
+      if (!uniqueSignalTimes.has(markerKey)) {
+        uniqueSignalTimes.add(markerKey);
         
-        const timeInSeconds = Math.floor(signal.timestamp_ms / 1000);
-        const markerKey = `${timeInSeconds}-${signal.direction}`;
+        const shortId = signal.id ? signal.id.substring(0, 8) : 'TRADE';
+        const isLong = signal.direction === 'LONG';
+        const isPending = signal.status === 'PENDING';
+        const isWin = signal.status === 'PROFIT' || signal.status === 'WIN';
+        const isLoss = signal.status === 'LOSS';
         
-        if (!uniqueSignalTimes.has(markerKey)) {
-          uniqueSignalTimes.add(markerKey);
-          
-          markers.push({
-            time: timeInSeconds,
-            position: signal.direction === 'LONG' ? 'belowBar' : 'aboveBar',
-            color: signal.direction === 'LONG' ? '#10b981' : '#ef4444',
-            shape: signal.direction === 'LONG' ? 'arrowUp' : 'arrowDown',
-            text: signal.direction,
-          });
-        }
-      });
-      
-      // Lightweight charts requires markers to be sorted by time
-      markers.sort((a, b) => a.time - b.time);
+        let markerColor = isLong ? '#10b981' : '#f43f5e';
+        if (isPending) markerColor = '#f59e0b';
+        else if (isWin) markerColor = '#10b981';
+        else if (isLoss) markerColor = '#f43f5e';
 
-      try {
-        seriesRef.current.candle.setMarkers(markers);
-      } catch { /* series may be disposed */ }
-    } else {
-      // Clear markers if not 1m timeframe
-      try {
-        seriesRef.current.candle.setMarkers([]);
-        } catch { /* series may be disposed */ }
-    }
+        markers.push({
+          time: candleBucketTime,
+          position: isLong ? 'belowBar' : 'aboveBar',
+          color: markerColor,
+          shape: isLong ? 'arrowUp' : 'arrowDown',
+          text: `${signal.direction} #${shortId}`,
+          id: signal.id
+        });
+      }
+    });
+    
+    // Lightweight charts requires markers to be sorted by time
+    markers.sort((a, b) => a.time - b.time);
+
+    try {
+      seriesRef.current.candle.setMarkers(markers);
+    } catch { /* series may be disposed */ }
 
   }, [state, symbol, signals, signalHistory, activeTimeframe]);
+
+  // Manage dynamic Entry/SL/TP lines when a trade signal is selected
+  const activeTradeLinesRef = useRef({ entry: null, sl: null, tp: null });
+
+  useEffect(() => {
+    if (!seriesRef.current.candle) return;
+
+    // Clear previous trade lines
+    if (activeTradeLinesRef.current.entry) {
+      try { seriesRef.current.candle.removePriceLine(activeTradeLinesRef.current.entry); } catch {}
+      activeTradeLinesRef.current.entry = null;
+    }
+    if (activeTradeLinesRef.current.sl) {
+      try { seriesRef.current.candle.removePriceLine(activeTradeLinesRef.current.sl); } catch {}
+      activeTradeLinesRef.current.sl = null;
+    }
+    if (activeTradeLinesRef.current.tp) {
+      try { seriesRef.current.candle.removePriceLine(activeTradeLinesRef.current.tp); } catch {}
+      activeTradeLinesRef.current.tp = null;
+    }
+
+    // If a signal is selected, draw its Entry, SL, and TP lines
+    if (selectedSignal) {
+      try {
+        if (selectedSignal.entry) {
+          activeTradeLinesRef.current.entry = seriesRef.current.candle.createPriceLine({
+            price: Number(selectedSignal.entry),
+            color: '#38bdf8',
+            lineWidth: 1,
+            lineStyle: 0, // Solid
+            axisLabelVisible: true,
+            title: `Entry #${selectedSignal.id?.substring(0, 6) || ''}`,
+          });
+        }
+        if (selectedSignal.sl) {
+          activeTradeLinesRef.current.sl = seriesRef.current.candle.createPriceLine({
+            price: Number(selectedSignal.sl),
+            color: '#f43f5e',
+            lineWidth: 1,
+            lineStyle: 2, // Dashed
+            axisLabelVisible: true,
+            title: 'SL',
+          });
+        }
+        if (selectedSignal.tp) {
+          activeTradeLinesRef.current.tp = seriesRef.current.candle.createPriceLine({
+            price: Number(selectedSignal.tp),
+            color: '#10b981',
+            lineWidth: 1,
+            lineStyle: 2, // Dashed
+            axisLabelVisible: true,
+            title: 'TP',
+          });
+        }
+      } catch (e) {
+        console.warn('Error drawing trade price lines:', e);
+      }
+    }
+  }, [selectedSignal]);
 
   // Apply dynamic background color based on Volume Delta Pressure
   useEffect(() => {
@@ -269,8 +346,9 @@ export default function ChartArea({ symbol, state, tradeState, filterStates = {}
       
       // Find the first signal that falls within this candlestick's time range
       const clickedSignal = allSignals.find(s => {
-        if (!s.timestamp) return false;
-        const sTime = Math.floor(new Date(s.timestamp).getTime() / 1000);
+        const sTime = s.timestamp_ms 
+          ? Math.floor(s.timestamp_ms / 1000) 
+          : (s.timestamp ? Math.floor(new Date(s.timestamp).getTime() / 1000) : 0);
         return sTime >= candleStartTime && sTime < candleEndTime;
       });
       
@@ -281,11 +359,10 @@ export default function ChartArea({ symbol, state, tradeState, filterStates = {}
         let x = param.point.x;
         let y = param.point.y;
         
-        // Widget is ~200px wide, ~130px tall. Adjust so it doesn't get clipped.
-        if (x + 220 > containerWidth) x -= 220;
+        if (x + 240 > containerWidth) x -= 240;
         else x += 15;
         
-        if (y + 140 > containerHeight) y -= 140;
+        if (y + 180 > containerHeight) y -= 180;
         else y += 15;
 
         setSelectedSignal({
@@ -416,31 +493,80 @@ export default function ChartArea({ symbol, state, tradeState, filterStates = {}
         {/* Signal Details Widget */}
         {selectedSignal && (
           <div 
-            className="absolute z-20 bg-slate-900 border border-slate-600 rounded-lg shadow-2xl p-3 w-[200px] transition-all duration-150"
+            className="absolute z-20 bg-slate-900/95 backdrop-blur-md border border-slate-600 rounded-xl shadow-2xl p-3.5 w-[250px] transition-all duration-150 text-xs"
             style={{ left: selectedSignal.x, top: selectedSignal.y }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-700/50">
-              <span className={`text-xs font-bold ${selectedSignal.direction === 'LONG' ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {selectedSignal.direction} SIGNAL
-              </span>
-              <span className="text-[10px] text-slate-500 font-mono">
-                {selectedSignal.id?.substring(0, 8) || 'No ID'}
-              </span>
+            <div className="flex justify-between items-start mb-2 pb-2 border-b border-slate-700">
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <span className={`font-bold text-xs ${selectedSignal.direction === 'LONG' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {selectedSignal.direction}
+                  </span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                    {selectedSignal.strategy?.replace('S0_', '').replace('S1_', '').replace('S2_', '').replace('S3_', '').replace('S4_', '').replace('S5_', '').replace('S6_', '').replace('S7_', '').replace('S8_', '').replace('S9_', '').replace('S10_', '') || 'Active'}
+                  </span>
+                </div>
+                <div className="text-[10px] text-slate-400 mt-0.5">
+                  {selectedSignal.status || 'PENDING'} {selectedSignal.pnl ? `(${selectedSignal.pnl > 0 ? '+' : ''}${selectedSignal.pnl.toFixed(2)}%)` : ''}
+                </div>
+              </div>
+              <button 
+                onClick={() => setSelectedSignal(null)}
+                className="text-slate-500 hover:text-slate-300 p-0.5 rounded"
+              >
+                <X size={14} />
+              </button>
             </div>
-            <div className="space-y-1.5 text-xs">
+
+            {/* Google Sheet ID Match Row */}
+            <div className="bg-slate-950/80 p-1.5 rounded-lg border border-slate-800 mb-2 flex items-center justify-between">
+              <div className="overflow-hidden">
+                <span className="text-[9px] text-slate-500 block uppercase font-bold tracking-wider">Sheet ID</span>
+                <span className="font-mono text-[10px] text-sky-400 truncate block select-all">
+                  {selectedSignal.id || 'N/A'}
+                </span>
+              </div>
+              {selectedSignal.id && (
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(selectedSignal.id);
+                  }}
+                  className="p-1 text-slate-400 hover:text-sky-400 hover:bg-slate-800 rounded transition-colors ml-1 flex-shrink-0"
+                  title="Copy Google Sheet ID"
+                >
+                  <Copy size={12} />
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-1.5 text-[11px]">
               <div className="flex justify-between">
-                <span className="text-slate-400">Entry</span>
-                <span className="font-mono text-slate-200">{Number(selectedSignal.entry).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 6})}</span>
+                <span className="text-slate-400">Entry Price</span>
+                <span className="font-mono text-slate-200 font-bold">{Number(selectedSignal.entry).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4})}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-400">Stop Loss</span>
-                <span className="font-mono text-rose-400">{Number(selectedSignal.sl).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 6})}</span>
+                <span className="font-mono text-rose-400">{Number(selectedSignal.sl).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4})}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-400">Take Profit</span>
-                <span className="font-mono text-emerald-400">{Number(selectedSignal.tp).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 6})}</span>
+                <span className="font-mono text-emerald-400">{Number(selectedSignal.tp).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4})}</span>
               </div>
+              {selectedSignal.exit_price > 0 && (
+                <div className="flex justify-between pt-1 border-t border-slate-800">
+                  <span className="text-slate-400">Exit Price</span>
+                  <span className="font-mono text-slate-300">{Number(selectedSignal.exit_price).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 4})}</span>
+                </div>
+              )}
+              {selectedSignal.net_profit !== undefined && selectedSignal.net_profit !== '' && (
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Net Profit</span>
+                  <span className={`font-mono font-bold ${Number(selectedSignal.net_profit) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    ${Number(selectedSignal.net_profit).toFixed(2)}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         )}
