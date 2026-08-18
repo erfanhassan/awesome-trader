@@ -48,9 +48,9 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "awesome-trader",
-        "symbol": logic_engine.current_symbol,
-        "mexc_ws_connected": mexc_client.is_connected,
-        "google_sheets_enabled": logic_engine.sheets_client is not None,
+        "symbol": getattr(logic_engine, "current_symbol", "BTCUSDT"),
+        "mexc_ws_active": getattr(mexc_client, "ws", None) is not None,
+        "google_sheets_enabled": getattr(logic_engine, "sheets_client", None) is not None,
     }
 
 @app.get("/api/klines")
