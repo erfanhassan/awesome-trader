@@ -42,6 +42,17 @@ app.add_middleware(
 
 
 
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint for system monitoring."""
+    return {
+        "status": "healthy",
+        "service": "awesome-trader",
+        "symbol": logic_engine.current_symbol,
+        "mexc_ws_connected": mexc_client.is_connected,
+        "google_sheets_enabled": logic_engine.sheets_client is not None,
+    }
+
 @app.get("/api/klines")
 async def get_klines(symbol: str = "BTCUSDT", interval: str = "Min1"):
     """Return kline data for chart rendering."""
