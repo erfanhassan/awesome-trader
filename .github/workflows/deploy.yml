@@ -33,11 +33,10 @@ jobs:
             --quiet \
             --ssh-flag="-o StrictHostKeyChecking=no" \
             --command="
-              echo '[GitHub Actions] Deployment triggered' >> /var/log/awesome-trader-updater.log
               cd /opt/awesome-trader
-              git pull origin main >> /var/log/awesome-trader-updater.log 2>&1
-              cd frontend && npm run build >> /var/log/awesome-trader-updater.log 2>&1
-              cd /opt/awesome-trader/backend && .venv/bin/pip install -r requirements.txt >> /var/log/awesome-trader-updater.log 2>&1
+              sudo git pull origin main
+              cd frontend && sudo npm run build
+              cd /opt/awesome-trader/backend && sudo .venv/bin/pip install -r requirements.txt -q
               sudo systemctl restart awesome-trader
-              echo '[GitHub Actions] Restart complete' >> /var/log/awesome-trader-updater.log
+              echo 'Deploy complete'
             "
