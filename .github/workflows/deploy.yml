@@ -8,21 +8,36 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
-      - name: Deploy to VM via SSH
-        uses: appleboy/ssh-action@master
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
         with:
-          host: ${{ secrets.VM_IP }}
-          username: ubuntu
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            # Clone repo if it doesn't exist, else pull
-            if [ ! -d "trader-shihab" ]; then
-              git clone https://github.com/erfanhassan/probabilitytradingshihabgooglehost.git trader-shihab
-            fi
-            cd trader-shihab
-            git pull origin main
-            
-            # Restart docker container
-            sudo docker compose down
-            sudo docker compose up -d --build
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Trigger immediate deploy on VM
+        run: |
+          gcloud compute ssh awesome-trader \
+            --project=trading-shishab \
+            --zone=us-central1-a \
+            --quiet \
+            --ssh-flag="-o StrictHostKeyChecking=no" \
+            --command="
+              echo '[GitHub Actions] Deployment triggered' >> /var/log/awesome-trader-updater.log
+              cd /opt/awesome-trader
+              git pull origin main >> /var/log/awesome-trader-updater.log 2>&1
+              cd frontend && npm run build >> /var/log/awesome-trader-updater.log 2>&1
+              cd /opt/awesome-trader/backend && .venv/bin/pip install -r requirements.txt >> /var/log/awesome-trader-updater.log 2>&1
+              sudo systemctl restart awesome-trader
+              echo '[GitHub Actions] Restart complete' >> /var/log/awesome-trader-updater.log
+            "
