@@ -12,6 +12,7 @@ class HMMEngine:
         self.model_path = model_path
         self.model = None
         self.is_training = False
+        self.converged = False
         
         # 3 Regimes: Chop, Trend, Liquidation Cascade
         self.n_components = 3
@@ -55,6 +56,9 @@ class HMMEngine:
             }
             
             self.model = new_model
+            self.converged = getattr(new_model, "monitor_", None) and getattr(new_model.monitor_, "converged", False)
+            if not self.converged:
+                print("WARNING: HMM training finished but did not converge.")
             self.save_model()
             print("HMM training complete.")
         except Exception as e:

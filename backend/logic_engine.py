@@ -17,7 +17,8 @@ class LogicEngine:
         self.kline_data = {}
         self.active_strategies = [
             {"name": "S11_Fixed_Pct_TP", "leverage": 50, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False, "fixed_tp_pct": True},
-            {"name": "S12_NoSL_MarginBoost", "leverage": 400, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False, "fixed_tp_pct": True, "no_sl": True, "auto_margin": True, "max_margin_adds": 3}
+            {"name": "S12_NoSL_MarginBoost", "leverage": 400, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False, "fixed_tp_pct": True, "no_sl": True, "auto_margin": True, "max_margin_adds": 1},
+            {"name": "S13_EMA_Cross_Scalp", "leverage": 25, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False, "fixed_tp_pct": True, "ema_cross": True}
         ]
 
         # symbol -> state dict
@@ -42,6 +43,8 @@ class LogicEngine:
         self.risk_engine = RiskEngine()
         self.signals = []
         self.signal_history = []
+        self.last_hmm_train_time = 0
+        self.HMM_RETRAIN_INTERVAL = 900
         self._load_history()
 
     def _load_history(self):
@@ -144,6 +147,8 @@ class LogicEngine:
                 # Fix 9: Session precision
                 "in_prime_session": False,
                 "in_any_session": False,
+                "swept_level_cooldown": {},
+                "ema_cross_signal_taken": False,
             }
             self.trade_data[symbol] = {
                 "buy_vol": 0.0,
@@ -904,16 +909,36 @@ class LogicEngine:
         state["regime_conf"] = regime_conf
         
         # Periodic Retrain (e.g. if we reach 1000 candles and not training)
-        if len(state["hmm_features"]) >= 1000 and not self.hmm_engine.is_training:
-            # We can retrain periodically or just rely on a separate script.
-            # We'll trigger a background retrain when buffer is full.
+        import time
+        now = time.time()
+        if (len(state["hmm_features"]) >= 1000 
+                and not self.hmm_engine.is_training 
+                and now - self.last_hmm_train_time > self.HMM_RETRAIN_INTERVAL):
             self.hmm_engine.retrain(state["hmm_features"])
+            self.last_hmm_train_time = now
+            
+        state["regime_reliable"] = getattr(self.hmm_engine, "converged", False)
 
         # Fix 2: Reset intrabar signal flag when a brand-new candle starts
         last_seen_t = state.get("last_seen_candle_t")
         if last_seen_t != current_candle["t"]:
             state["intrabar_signal_taken"] = False
             state["last_seen_candle_t"] = current_candle["t"]
+            
+        if is_historical:
+            return
+            
+        def _get_regime_thresholds(st):
+            r = st.get("regime", "Chop")
+            reliable = st.get("regime_reliable", False)
+            if not reliable:
+                return {"min_body": 0.20, "require_vol": False, "ttl": 8}
+            if r == "Liquidation Cascade":
+                return {"min_body": 0.00, "require_vol": False, "ttl": 6}
+            elif r == "Trend":
+                return {"min_body": 0.20, "require_vol": False, "ttl": 10}
+            else:  # Chop
+                return {"min_body": 0.30, "require_vol": True, "ttl": 5}
 
         # ── CLOSE-ONLY: Setup state machine (sweep detection + anchor locking + TTL) ──
         if current_candle.get("is_closed", False):
@@ -960,45 +985,57 @@ class LogicEngine:
                     print(f"[{symbol}] WICK REJECTION LONG: touched {sweep_low:.4f}, closed {c_close:.4f}. State -> LONG_SETUP_FORMED")
                 # Fix 5: Detect sweep of 4H session level (premium if also breaking 1D level)
                 elif c_high > sweep_high:
-                    state["setup_state"] = "SWEPT_HIGH"
-                    state["target_tp"] = min([c["l"] for c in history[-61:-1]]) if len(history) >= 61 else c_low
-                    state["sweep_is_premium"] = d1_high > 0 and c_high > d1_high
-                    label = " [PREMIUM — also 1D HIGH!]" if state["sweep_is_premium"] else ""
-                    print(f"[{symbol}] SWEPT 4H HIGH ({sweep_high:.4f}).{label} State -> SWEPT_HIGH")
+                    cooldown = state.get("swept_level_cooldown", {})
+                    level_key = round(sweep_high, 1)
+                    if level_key not in cooldown or len(history) - cooldown[level_key] >= 10:
+                        state["setup_state"] = "SWEPT_HIGH"
+                        state["target_tp"] = min([c["l"] for c in history[-61:-1]]) if len(history) >= 61 else c_low
+                        state["sweep_is_premium"] = d1_high > 0 and c_high > d1_high
+                        label = " [PREMIUM — also 1D HIGH!]" if state["sweep_is_premium"] else ""
+                        print(f"[{symbol}] SWEPT 4H HIGH ({sweep_high:.4f}).{label} State -> SWEPT_HIGH")
                 elif c_low < sweep_low:
-                    state["setup_state"] = "SWEPT_LOW"
-                    state["target_tp"] = max([c["h"] for c in history[-61:-1]]) if len(history) >= 61 else c_high
-                    state["sweep_is_premium"] = d1_low > 0 and c_low < d1_low
-                    label = " [PREMIUM — also 1D LOW!]" if state["sweep_is_premium"] else ""
-                    print(f"[{symbol}] SWEPT 4H LOW ({sweep_low:.4f}).{label} State -> SWEPT_LOW")
+                    cooldown = state.get("swept_level_cooldown", {})
+                    level_key = round(sweep_low, 1)
+                    if level_key not in cooldown or len(history) - cooldown[level_key] >= 10:
+                        state["setup_state"] = "SWEPT_LOW"
+                        state["target_tp"] = max([c["h"] for c in history[-61:-1]]) if len(history) >= 61 else c_high
+                        state["sweep_is_premium"] = d1_low > 0 and c_low < d1_low
+                        label = " [PREMIUM — also 1D LOW!]" if state["sweep_is_premium"] else ""
+                        print(f"[{symbol}] SWEPT 4H LOW ({sweep_low:.4f}).{label} State -> SWEPT_LOW")
                 elif state.get("15m_swing_high", 0) > 0 and c_high > state["15m_swing_high"]:
-                    state["setup_state"] = "SWEPT_HIGH"
-                    state["target_tp"] = min([c["l"] for c in history[-15:-1]]) if len(history) >= 15 else c_low
-                    state["sweep_is_premium"] = False
-                    print(f"[{symbol}] SWEPT 15m HIGH ({state['15m_swing_high']:.4f}). State -> SWEPT_HIGH")
+                    cooldown = state.get("swept_level_cooldown", {})
+                    level_key = round(state["15m_swing_high"], 1)
+                    if level_key not in cooldown or len(history) - cooldown[level_key] >= 10:
+                        state["setup_state"] = "SWEPT_HIGH"
+                        state["target_tp"] = min([c["l"] for c in history[-15:-1]]) if len(history) >= 15 else c_low
+                        state["sweep_is_premium"] = False
+                        print(f"[{symbol}] SWEPT 15m HIGH ({state['15m_swing_high']:.4f}). State -> SWEPT_HIGH")
                 elif state.get("15m_swing_low", 0) > 0 and c_low < state["15m_swing_low"]:
-                    state["setup_state"] = "SWEPT_LOW"
-                    state["target_tp"] = max([c["h"] for c in history[-15:-1]]) if len(history) >= 15 else c_high
-                    state["sweep_is_premium"] = False
-                    print(f"[{symbol}] SWEPT 15m LOW ({state['15m_swing_low']:.4f}). State -> SWEPT_LOW")
+                    cooldown = state.get("swept_level_cooldown", {})
+                    level_key = round(state["15m_swing_low"], 1)
+                    if level_key not in cooldown or len(history) - cooldown[level_key] >= 10:
+                        state["setup_state"] = "SWEPT_LOW"
+                        state["target_tp"] = max([c["h"] for c in history[-15:-1]]) if len(history) >= 15 else c_high
+                        state["sweep_is_premium"] = False
+                        print(f"[{symbol}] SWEPT 15m LOW ({state['15m_swing_low']:.4f}). State -> SWEPT_LOW")
 
             # Refresh setup_state variable in case it just transitioned
             setup_state = state.get("setup_state", "WAITING")
 
             if setup_state == "SWEPT_HIGH":
                 if is_red:
-                    # Fix 3: Setup candle quality check — body must be >= 50% of candle range
+                    # Fix 3: Setup candle quality check — body must be >= threshold
                     candle_range = c_high - c_low
                     candle_body  = abs(c_close - c_open)
                     body_ratio   = candle_body / candle_range if candle_range > 0 else 0
-                    if body_ratio < 0.5:
-                        print(f"[{symbol}] Setup candle REJECTED: body ratio {body_ratio:.2f} < 0.5 (weak/doji). State -> WAITING.")
+                    thresholds = _get_regime_thresholds(state)
+                    if body_ratio < thresholds["min_body"]:
+                        print(f"[{symbol}] Setup candle REJECTED: body ratio {body_ratio:.2f} < {thresholds['min_body']:.2f} (weak/doji). State -> WAITING.")
                         state["setup_state"] = "WAITING"
                     else:
                         state["setup_state"] = "SHORT_SETUP_FORMED"
                         state["setup_candle"] = current_candle
-                        regime = state.get("regime", "Chop")
-                        state["ttl"] = 3 if regime == "Liquidation Cascade" else (4 if regime == "Trend" else 5)
+                        state["ttl"] = thresholds["ttl"]
                         print(f"[{symbol}] Red candle locked (body {body_ratio:.2f}). State -> SHORT_SETUP_FORMED (TTL: {state['ttl']})")
 
             elif setup_state == "SWEPT_LOW":
@@ -1007,14 +1044,14 @@ class LogicEngine:
                     candle_range = c_high - c_low
                     candle_body  = abs(c_close - c_open)
                     body_ratio   = candle_body / candle_range if candle_range > 0 else 0
-                    if body_ratio < 0.5:
-                        print(f"[{symbol}] Setup candle REJECTED: body ratio {body_ratio:.2f} < 0.5 (weak/doji). State -> WAITING.")
+                    thresholds = _get_regime_thresholds(state)
+                    if body_ratio < thresholds["min_body"]:
+                        print(f"[{symbol}] Setup candle REJECTED: body ratio {body_ratio:.2f} < {thresholds['min_body']:.2f} (weak/doji). State -> WAITING.")
                         state["setup_state"] = "WAITING"
                     else:
                         state["setup_state"] = "LONG_SETUP_FORMED"
                         state["setup_candle"] = current_candle
-                        regime = state.get("regime", "Chop")
-                        state["ttl"] = 3 if regime == "Liquidation Cascade" else (4 if regime == "Trend" else 5)
+                        state["ttl"] = thresholds["ttl"]
                         print(f"[{symbol}] Green candle locked (body {body_ratio:.2f}). State -> LONG_SETUP_FORMED (TTL: {state['ttl']})")
 
             elif setup_state == "SHORT_SETUP_FORMED":
@@ -1022,12 +1059,14 @@ class LogicEngine:
                 state["ttl"] = state.get("ttl", 5) - 1
                 if state["ttl"] <= 0:
                     state["setup_state"] = "WAITING"
+                    state["swept_level_cooldown"][round(sweep_high, 1)] = len(history)
                     print(f"[{symbol}] TTL Expired. No break occurred. State -> WAITING.")
 
             elif setup_state == "LONG_SETUP_FORMED":
                 state["ttl"] = state.get("ttl", 5) - 1
                 if state["ttl"] <= 0:
                     state["setup_state"] = "WAITING"
+                    state["swept_level_cooldown"][round(sweep_low, 1)] = len(history)
                     print(f"[{symbol}] TTL Expired. No break occurred. State -> WAITING.")
 
         # ── INTRABAR: Trigger check (Fix 2 — runs every tick, not just on candle close) ──
@@ -1038,8 +1077,9 @@ class LogicEngine:
             setup_candle = state.get("setup_candle")
             if setup_candle:
                 buffer_price = setup_candle["l"] * (1 - 0.0005)
+                thresholds = _get_regime_thresholds(state)
                 if current_candle["c"] < buffer_price:
-                    if vol_surge:
+                    if not thresholds["require_vol"] or vol_surge:
                         trigger_direction = "SHORT"
                         state["setup_state"] = "TRADED_HIGH"
                         state["intrabar_signal_taken"] = True
@@ -1053,8 +1093,9 @@ class LogicEngine:
             setup_candle = state.get("setup_candle")
             if setup_candle:
                 buffer_price = setup_candle["h"] * (1 + 0.0005)
+                thresholds = _get_regime_thresholds(state)
                 if current_candle["c"] > buffer_price:
-                    if vol_surge:
+                    if not thresholds["require_vol"] or vol_surge:
                         trigger_direction = "LONG"
                         state["setup_state"] = "TRADED_LOW"
                         state["intrabar_signal_taken"] = True
@@ -1157,8 +1198,9 @@ class LogicEngine:
                     if valid:
                         stats = self.risk_engine.calculate_historical_stats(self.signal_history, strategy_name, "SHORT")
                         ev = self.risk_engine.calculate_ev(stats["win_rate"], stats["avg_win"], stats["avg_loss"])
-                        if ev <= 0 and not is_historical:
-                            print(f"[{symbol}] EV VETO: EV is {ev:.4f} <= 0. Blocking trade.")
+                        n_trades = stats.get("n_trades", 0)
+                        if ev <= 0 and n_trades >= 15 and not is_historical:
+                            print(f"[{symbol}] EV VETO: EV is {ev:.4f} <= 0 (n={n_trades}). Blocking trade.")
                         else:
                             hmm_conf = state.get("regime_conf", 0.5)
                             kelly_fraction = self.risk_engine.calculate_kelly_fraction(stats["win_rate"], stats["avg_win"], stats["avg_loss"], hmm_conf)
@@ -1182,15 +1224,60 @@ class LogicEngine:
                     if valid:
                         stats = self.risk_engine.calculate_historical_stats(self.signal_history, strategy_name, "LONG")
                         ev = self.risk_engine.calculate_ev(stats["win_rate"], stats["avg_win"], stats["avg_loss"])
-                        if ev <= 0 and not is_historical:
-                            print(f"[{symbol}] EV VETO: EV is {ev:.4f} <= 0. Blocking trade.")
+                        n_trades = stats.get("n_trades", 0)
+                        if ev <= 0 and n_trades >= 15 and not is_historical:
+                            print(f"[{symbol}] EV VETO: EV is {ev:.4f} <= 0 (n={n_trades}). Blocking trade.")
                         else:
                             hmm_conf = state.get("regime_conf", 0.5)
                             kelly_fraction = self.risk_engine.calculate_kelly_fraction(stats["win_rate"], stats["avg_win"], stats["avg_loss"], hmm_conf)
                             await self._trigger_signal(symbol, "LONG", current_candle, setup_candle, avg_vol, state["target_tp"], strategy, setup_id, kelly_fraction)
+
+        # ── S13: 1m EMA Cross Scalp ───────────────────────────────────────────
+        # Independent of the sweep state machine — fires on momentum crosses
+        if not is_historical and not state.get("ema_cross_signal_taken"):
+            ema20 = state.get("1m_ema20", 0)
+            ema50 = state.get("1m_ema50", 0)
+            rsi   = state.get("rsi_14", 50)
+
+            if ema20 > 0 and ema50 > 0 and len(history) >= 3:
+                # Need EMA from previous candle to detect cross
+                prev_closes = [c["c"] for c in history[-52:]]
+                if len(prev_closes) >= 52:
+                    # Simple EMA helper
+                    def _calc_ema(prices, period):
+                        k = 2 / (period + 1)
+                        ema = prices[0]
+                        for p in prices[1:]:
+                            ema = (p * k) + (ema * (1 - k))
+                        return ema
+                        
+                    prev_ema20 = _calc_ema(prev_closes[:-1], 20)
+                    prev_ema50 = _calc_ema(prev_closes[:-1], 50)
+
+                    ema_cross_direction = None
+                    if ema20 > ema50 and prev_ema20 <= prev_ema50 and rsi < 65:
+                        ema_cross_direction = "LONG"
+                        state["ema_cross_signal_taken"] = True
+                    elif ema20 < ema50 and prev_ema20 >= prev_ema50 and rsi > 35:
+                        ema_cross_direction = "SHORT"
+                        state["ema_cross_signal_taken"] = True
+
+                    if ema_cross_direction:
+                        s13 = next((s for s in self.active_strategies if s["name"] == "S13_EMA_Cross_Scalp"), None)
+                        if s13:
+                            setup_id_s13 = str(uuid.uuid4())
+                            await self._trigger_signal(
+                                symbol, ema_cross_direction, current_candle,
+                                current_candle, avg_vol, 0, s13, setup_id_s13, 1.0
+                            )
+
+        # Reset EMA cross signal taken on new candle
+        if current_candle.get("is_closed"):
+            state["ema_cross_signal_taken"] = False
+
     async def _trigger_signal(self, symbol, direction, trigger_candle, setup_candle, avg_vol, target_tp, strategy=None, setup_id=None, kelly_fraction=1.0):
         # Fix 10: Max concurrent positions limit — avoid over-exposure
-        MAX_CONCURRENT_POSITIONS = 2
+        MAX_CONCURRENT_POSITIONS = 5
         open_count = sum(1 for s in self.signal_history if s.get("status") == "PENDING")
         if open_count >= MAX_CONCURRENT_POSITIONS:
             print(f"[{symbol}] POSITION LIMIT: {open_count} open positions >= max {MAX_CONCURRENT_POSITIONS}. Skipping signal.")
