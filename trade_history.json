@@ -1,1 +1,44 @@
-[]
+[
+  {
+    "id": "0f23b734-cdcd-481a-9589-4dcae20bcd08",
+    "symbol": "BTCUSDT",
+    "direction": "SHORT",
+    "entry": 64500,
+    "sl": 66000,
+    "tp": 62000,
+    "tp1": 63000,
+    "scaled_out": false,
+    "timestamp": "2026-08-18T20:23:45.705902+00:00",
+    "status": "PENDING",
+    "pnl": 0.0,
+    "exit_price": 0.0,
+    "close_time": "",
+    "slippage": 0.0,
+    "fees": 0.0,
+    "funding_rate": 0.0,
+    "net_profit": 0.0,
+    "raw_profit": 0.0,
+    "close_reason": "",
+    "duration": "",
+    "max_drawdown_price": 64500,
+    "max_drawdown": "",
+    "strategy": "S0_Baseline_400x",
+    "setup_id": null,
+    "config": {
+      "name": "S0_Baseline_400x",
+      "leverage": 50,
+      "htf": false,
+      "delta": false,
+      "rsi": false,
+      "time_exit": false,
+      "fvg": false,
+      "pre_liq": false,
+      "cross_margin": false,
+      "scale_out": false,
+      "auto_lev": false,
+      "atr_filter": false
+    },
+    "computed_leverage": 50,
+    "strategy_metric": "50x Static"
+  }
+]

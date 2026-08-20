@@ -16,18 +16,8 @@ class LogicEngine:
         # symbol -> { "1m": [...], "4h": [...], "1d": [...] }
         self.kline_data = {}
         self.active_strategies = [
-            {"name": "S0_Baseline_400x", "leverage": 50, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False},
-            {"name": "S1_AutoLeverage", "leverage": "auto", "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": True, "atr_filter": False},
-            {"name": "S2_PreLiq_SL", "leverage": 50, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": True, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False},
-            {"name": "S3_ATR_Filter", "leverage": 50, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": True},
-            {"name": "S4_CrossMargin", "leverage": 50, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": True, "scale_out": False, "auto_lev": False, "atr_filter": False},
-            {"name": "S5_ScaleOut_BE", "leverage": 50, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": True, "auto_lev": False, "atr_filter": False},
-            {"name": "S6_HTF_Aligned", "leverage": 50, "htf": True, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False},
-            {"name": "S7_Delta_Div", "leverage": 50, "htf": False, "delta": True, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False},
-            {"name": "S8_RSI_Div", "leverage": 50, "htf": False, "delta": False, "rsi": True, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False},
-            {"name": "S9_TimeExit", "leverage": 50, "htf": False, "delta": False, "rsi": False, "time_exit": True, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False},
-            {"name": "S10_FVG_Conf", "leverage": 50, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": True, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False},
-            {"name": "S11_Fixed_Pct_TP", "leverage": 50, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False, "fixed_tp_pct": True}
+            {"name": "S11_Fixed_Pct_TP", "leverage": 50, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False, "fixed_tp_pct": True},
+            {"name": "S12_NoSL_MarginBoost", "leverage": 400, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False, "fixed_tp_pct": True, "no_sl": True, "auto_margin": True, "max_margin_adds": 3}
         ]
 
         # symbol -> state dict
@@ -253,7 +243,32 @@ class LogicEngine:
                     else:
                         liq_price = pos["entry"] + (self.demo_balance / size) if size > 0 else float('inf')
                 else:
-                    liq_price = pos["entry"] * (1 - 0.0015) if pos["direction"] == "LONG" else pos["entry"] * (1 + 0.0015)
+                    initial_margin = pos.get("initial_margin", pos.get("margin", 5.0))
+                    total_margin = pos.get("margin", 5.0)
+                    size = (initial_margin * pos.get("leverage", 50)) / pos["entry"]
+                    
+                    if pos["direction"] == "LONG":
+                        liq_price = pos["entry"] - (total_margin / size) if size > 0 else 0
+                    else:
+                        liq_price = pos["entry"] + (total_margin / size) if size > 0 else float('inf')
+                        
+                    if config.get("auto_margin") and pos.get("margin_adds", 0) < config.get("max_margin_adds", 3):
+                        liq_buffer = 0.0005
+                        needs_margin = False
+                        if pos["direction"] == "LONG" and data["l"] <= liq_price * (1 + liq_buffer):
+                            needs_margin = True
+                        elif pos["direction"] == "SHORT" and data["h"] >= liq_price * (1 - liq_buffer):
+                            needs_margin = True
+                            
+                        if needs_margin and self.demo_balance >= initial_margin:
+                            pos["margin"] += initial_margin
+                            pos["margin_adds"] = pos.get("margin_adds", 0) + 1
+                            print(f"[{symbol}] AUTO MARGIN BOOST! Added ${initial_margin:.2f} (Total adds: {pos['margin_adds']})")
+                            total_margin = pos["margin"]
+                            if pos["direction"] == "LONG":
+                                liq_price = pos["entry"] - (total_margin / size) if size > 0 else 0
+                            else:
+                                liq_price = pos["entry"] + (total_margin / size) if size > 0 else float('inf')
                 
                 if pos["direction"] == "LONG":
                     if config.get("scale_out") and not pos.get("scaled_out") and data["h"] >= pos.get("tp1", pos["tp"]):
@@ -382,7 +397,33 @@ class LogicEngine:
                     else:
                         liq_price = hist_pos["entry"] + (virtual_balance / size) if size > 0 else float('inf')
                 else:
-                    liq_price = hist_pos["entry"] * (1 - 0.0015) if hist_pos["direction"] == "LONG" else hist_pos["entry"] * (1 + 0.0015)
+                    config_lev = config.get("leverage", 400)
+                    leverage = float(hist_pos.get("computed_leverage", config_lev if config_lev != "auto" else 400))
+                    initial_margin = hist_pos.get("initial_margin", hist_pos.get("margin", 5.0))
+                    total_margin = hist_pos.get("margin", 5.0)
+                    size = (initial_margin * leverage) / hist_pos["entry"]
+                    
+                    if hist_pos["direction"] == "LONG":
+                        liq_price = hist_pos["entry"] - (total_margin / size) if size > 0 else 0
+                    else:
+                        liq_price = hist_pos["entry"] + (total_margin / size) if size > 0 else float('inf')
+                        
+                    if config.get("auto_margin") and hist_pos.get("margin_adds", 0) < config.get("max_margin_adds", 3):
+                        liq_buffer = 0.0005
+                        needs_margin = False
+                        if hist_pos["direction"] == "LONG" and data["l"] <= liq_price * (1 + liq_buffer):
+                            needs_margin = True
+                        elif hist_pos["direction"] == "SHORT" and data["h"] >= liq_price * (1 - liq_buffer):
+                            needs_margin = True
+                            
+                        if needs_margin:
+                            hist_pos["margin"] = total_margin + initial_margin
+                            hist_pos["margin_adds"] = hist_pos.get("margin_adds", 0) + 1
+                            total_margin = hist_pos["margin"]
+                            if hist_pos["direction"] == "LONG":
+                                liq_price = hist_pos["entry"] - (total_margin / size) if size > 0 else 0
+                            else:
+                                liq_price = hist_pos["entry"] + (total_margin / size) if size > 0 else float('inf')
                 
                 if hist_pos["direction"] == "LONG":
                     if config.get("scale_out") and not hist_pos.get("scaled_out") and data["h"] >= hist_pos.get("tp1", hist_pos["tp"]):
@@ -731,36 +772,18 @@ class LogicEngine:
             # (no penalty if not enough history — condition bonuses carry it)
 
             # ── Regime match bonuses ────────────────────────────────────────
-            if name == "S0_Baseline_400x" and regime == "Liquidation Cascade":
+            if name == "S11_Fixed_Pct_TP" and regime != "Chop":
                 score += 35 * regime_conf
-            if name == "S6_HTF_Aligned"   and regime == "Trend":
+            if name == "S12_NoSL_MarginBoost" and regime == "Chop":
                 score += 35 * regime_conf
-            if name == "S11_Fixed_Pct_TP" and regime == "Chop":
-                score += 25 * regime_conf
-
-            # ── Indicator / signal match bonuses ────────────────────────────
-            if name == "S8_RSI_Div"    and rsi_extreme:     score += 30
-            if name == "S7_Delta_Div"  and delta_confirms:  score += 28
-            if name == "S10_FVG_Conf"  and fvg_present:     score += 28
-            if name == "S3_ATR_Filter" and atr_small:       score += 20
-            if name == "S4_CrossMargin" and high_vol_day:   score += 22
-            if name == "S5_ScaleOut_BE" and regime == "Chop" and not fvg_present:
-                score += 15
-            if name == "S1_AutoLeverage" and dist_approx > 0.003:
-                score += 18
-
-            # ── Premium level bonus ─────────────────────────────────────────
-            if premium_level and name == "S0_Baseline_400x":
-                score += 25  # Strongest sweep level → use aggressive baseline
 
             # ── Global context bonuses ──────────────────────────────────────
             if htf_aligned:      score += 10  # Always reward HTF alignment
             if in_prime_session: score += 8   # Prime session is higher quality
 
             # ── Tiebreaker: slight preference for regime-matched strategy ───
-            if (regime == "Liquidation Cascade" and name == "S0_Baseline_400x") or \
-               (regime == "Trend"               and name == "S6_HTF_Aligned")   or \
-               (regime == "Chop"                and name == "S11_Fixed_Pct_TP"):
+            if (regime != "Chop" and name == "S11_Fixed_Pct_TP") or \
+               (regime == "Chop" and name == "S12_NoSL_MarginBoost"):
                 score += 5
 
             scores_log[name] = round(score, 1)
@@ -773,10 +796,7 @@ class LogicEngine:
 
         # Final fallback: if everything got disqualified, use regime default
         if best_strategy is None:
-            fallback_name = {
-                "Liquidation Cascade": "S0_Baseline_400x",
-                "Trend": "S6_HTF_Aligned",
-            }.get(regime, "S11_Fixed_Pct_TP")
+            fallback_name = "S12_NoSL_MarginBoost" if regime == "Chop" else "S11_Fixed_Pct_TP"
             best_strategy = next(
                 (s for s in self.active_strategies if s["name"] == fallback_name),
                 self.active_strategies[0]
@@ -920,19 +940,47 @@ class LogicEngine:
                         setup_state = "SWEPT_LOW"
 
             if setup_state == "WAITING":
+                # Wick Rejection (Touch and Trade)
+                is_short_rejection = c_high >= sweep_high and c_close < sweep_high and (sweep_high - c_close)/sweep_high >= 0.0005
+                is_long_rejection = c_low <= sweep_low and c_close > sweep_low and (c_close - sweep_low)/sweep_low >= 0.0005
+                
+                if is_short_rejection:
+                    state["setup_state"] = "SHORT_SETUP_FORMED"
+                    state["setup_candle"] = current_candle
+                    regime = state.get("regime", "Chop")
+                    state["ttl"] = 3 if regime == "Liquidation Cascade" else (4 if regime == "Trend" else 5)
+                    state["target_tp"] = min([c["l"] for c in history[-61:-1]]) if len(history) >= 61 else c_low
+                    print(f"[{symbol}] WICK REJECTION SHORT: touched {sweep_high:.4f}, closed {c_close:.4f}. State -> SHORT_SETUP_FORMED")
+                elif is_long_rejection:
+                    state["setup_state"] = "LONG_SETUP_FORMED"
+                    state["setup_candle"] = current_candle
+                    regime = state.get("regime", "Chop")
+                    state["ttl"] = 3 if regime == "Liquidation Cascade" else (4 if regime == "Trend" else 5)
+                    state["target_tp"] = max([c["h"] for c in history[-61:-1]]) if len(history) >= 61 else c_high
+                    print(f"[{symbol}] WICK REJECTION LONG: touched {sweep_low:.4f}, closed {c_close:.4f}. State -> LONG_SETUP_FORMED")
                 # Fix 5: Detect sweep of 4H session level (premium if also breaking 1D level)
-                if c_high > sweep_high:
+                elif c_high > sweep_high:
                     state["setup_state"] = "SWEPT_HIGH"
-                    state["target_tp"] = min([c["l"] for c in history[-61:-1]])
+                    state["target_tp"] = min([c["l"] for c in history[-61:-1]]) if len(history) >= 61 else c_low
                     state["sweep_is_premium"] = d1_high > 0 and c_high > d1_high
                     label = " [PREMIUM — also 1D HIGH!]" if state["sweep_is_premium"] else ""
                     print(f"[{symbol}] SWEPT 4H HIGH ({sweep_high:.4f}).{label} State -> SWEPT_HIGH")
                 elif c_low < sweep_low:
                     state["setup_state"] = "SWEPT_LOW"
-                    state["target_tp"] = max([c["h"] for c in history[-61:-1]])
+                    state["target_tp"] = max([c["h"] for c in history[-61:-1]]) if len(history) >= 61 else c_high
                     state["sweep_is_premium"] = d1_low > 0 and c_low < d1_low
                     label = " [PREMIUM — also 1D LOW!]" if state["sweep_is_premium"] else ""
                     print(f"[{symbol}] SWEPT 4H LOW ({sweep_low:.4f}).{label} State -> SWEPT_LOW")
+                elif state.get("15m_swing_high", 0) > 0 and c_high > state["15m_swing_high"]:
+                    state["setup_state"] = "SWEPT_HIGH"
+                    state["target_tp"] = min([c["l"] for c in history[-15:-1]]) if len(history) >= 15 else c_low
+                    state["sweep_is_premium"] = False
+                    print(f"[{symbol}] SWEPT 15m HIGH ({state['15m_swing_high']:.4f}). State -> SWEPT_HIGH")
+                elif state.get("15m_swing_low", 0) > 0 and c_low < state["15m_swing_low"]:
+                    state["setup_state"] = "SWEPT_LOW"
+                    state["target_tp"] = max([c["h"] for c in history[-15:-1]]) if len(history) >= 15 else c_high
+                    state["sweep_is_premium"] = False
+                    print(f"[{symbol}] SWEPT 15m LOW ({state['15m_swing_low']:.4f}). State -> SWEPT_LOW")
 
             # Refresh setup_state variable in case it just transitioned
             setup_state = state.get("setup_state", "WAITING")
@@ -1152,14 +1200,28 @@ class LogicEngine:
             strategy = {"name": "S0_Baseline_400x", "leverage": 50, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False}
         strategy_name = strategy["name"]
         
-        if direction == "SHORT":
-            base_sl = setup_candle["h"]
-            dist_pct = (base_sl - trigger_candle["c"]) / trigger_candle["c"]
+        trade_state = self.market_state.get(symbol, {})
+        BUFFER = 0.0005 # 0.05% buffer
+
+        if strategy.get("no_sl"):
+            if direction == "SHORT":
+                base_sl = trigger_candle["c"] * 1.5
+            else:
+                base_sl = trigger_candle["c"] * 0.5
+            dist_pct = abs(trigger_candle["c"] - base_sl) / trigger_candle["c"]
         else:
-            base_sl = setup_candle["l"]
-            dist_pct = (trigger_candle["c"] - base_sl) / trigger_candle["c"]
+            if direction == "SHORT":
+                four_h_high = trade_state.get("4h_session_high", 0)
+                structure_sl = four_h_high * (1 + BUFFER) if four_h_high > 0 else setup_candle["h"]
+                base_sl = max(setup_candle["h"], structure_sl)
+                dist_pct = (base_sl - trigger_candle["c"]) / trigger_candle["c"]
+            else:
+                four_h_low = trade_state.get("4h_session_low", 0)
+                structure_sl = four_h_low * (1 - BUFFER) if four_h_low > 0 else setup_candle["l"]
+                base_sl = min(setup_candle["l"], structure_sl)
+                dist_pct = (trigger_candle["c"] - base_sl) / trigger_candle["c"]
             
-        if strategy["pre_liq"]:
+        if strategy.get("pre_liq"):
             # Force SL exactly 0.12% away to avoid 0.15% liquidation
             dist_pct = 0.0012
             if direction == "SHORT": base_sl = trigger_candle["c"] * (1 + 0.0012)
@@ -1170,7 +1232,7 @@ class LogicEngine:
         # Fix 4: Minimum SL distance filter — fees eat trades with tight SL
         # At 50x with 0.04% round-trip fees, need at least 0.08% to break even
         MIN_SL_DISTANCE = 0.0008  # 0.08%
-        if dist_pct < MIN_SL_DISTANCE:
+        if dist_pct < MIN_SL_DISTANCE and not strategy.get("no_sl"):
             print(f"[{symbol}] TRADE REJECTED: SL distance {dist_pct*100:.4f}% < minimum 0.08%. Fees would consume profit.")
             return
 
@@ -1279,6 +1341,8 @@ class LogicEngine:
             strategy_metric = "FVG Confirmed"
         elif strategy['name'] == 'S11_Fixed_Pct_TP':
             strategy_metric = "0.15% Fixed TP"
+        elif strategy['name'] == 'S12_NoSL_MarginBoost':
+            strategy_metric = "400x Auto-Margin"
         else:
             strategy_metric = "50x Static"
 
@@ -1310,6 +1374,9 @@ class LogicEngine:
             "config": strategy,
             "computed_leverage": computed_leverage,
             "strategy_metric": strategy_metric,
+            "initial_margin": 5.0,
+            "margin": 5.0,
+            "margin_adds": 0
         }
         self.signal_history.append(hist_signal)
         
@@ -1338,7 +1405,9 @@ class LogicEngine:
                         "tp": tp,
                         "tp1": tp1,
                         "scaled_out": False,
+                        "initial_margin": invest_amount,
                         "margin": self.demo_balance if strategy.get("cross_margin") else invest_amount,
+                        "margin_adds": 0,
                         "leverage": computed_leverage,
                         "strategy": strategy_name,
                         "config": strategy,
