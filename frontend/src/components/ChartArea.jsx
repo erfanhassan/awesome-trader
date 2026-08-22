@@ -513,7 +513,7 @@ export default function ChartArea({ symbol, state, tradeState, filterStates = {}
                     {selectedSignal.direction}
                   </span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
-                    {selectedSignal.strategy?.replace('S0_', '').replace('S1_', '').replace('S2_', '').replace('S3_', '').replace('S4_', '').replace('S5_', '').replace('S6_', '').replace('S7_', '').replace('S8_', '').replace('S9_', '').replace('S10_', '') || 'Active'}
+                    {selectedSignal.strategy?.replace(/S[0-9]+_/, '').replace('SA_', '').replace('SB_', '') || 'Active'}
                   </span>
                 </div>
                 <div className="text-[10px] text-slate-400 mt-0.5">

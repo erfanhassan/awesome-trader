@@ -41,7 +41,7 @@ const SignalHistory = ({ history, marketData, onClearHistory }) => {
             onChange={(e) => setSelectedStrategy(e.target.value)}
             className="text-xs bg-slate-900 border border-slate-700 text-slate-300 rounded-md px-2 py-1 outline-none"
           >
-            {strategies.map(s => <option key={s} value={s}>{s.replace('S0_', '').replace('S1_', '').replace('S2_', '').replace('S3_', '').replace('S4_', '').replace('S5_', '').replace('S6_', '').replace('S7_', '').replace('S8_', '').replace('S9_', '').replace('S10_', '')}</option>)}
+            {strategies.map(s => <option key={s} value={s}>{s.replace(/S[0-9]+_/, '').replace('SA_', '').replace('SB_', '')}</option>)}
           </select>
           <div className="text-xs text-slate-500 font-medium px-2 py-1 bg-slate-900 rounded-md">
             {filteredHistory.length} signals

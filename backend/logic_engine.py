@@ -16,9 +16,28 @@ class LogicEngine:
         # symbol -> { "1m": [...], "4h": [...], "1d": [...] }
         self.kline_data = {}
         self.active_strategies = [
-            {"name": "S11_Fixed_Pct_TP", "leverage": 50, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False, "fixed_tp_pct": True},
-            {"name": "S12_NoSL_MarginBoost", "leverage": 400, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False, "fixed_tp_pct": True, "no_sl": True, "auto_margin": True, "max_margin_adds": 1},
-            {"name": "S13_EMA_Cross_Scalp", "leverage": 25, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False, "fixed_tp_pct": True, "ema_cross": True}
+            {
+                "name": "SA_Level_Scalp",
+                "leverage": 50,
+                "fixed_tp_pct": True,
+                "tp_pct": 0.0015,         # 0.15%
+                "sl_pct": 0.0012,         # 0.12% hard SL
+                "time_exit_minutes": 8,   # Kill if no hit in 8 min
+                "htf": False, "delta": False, "rsi": False,
+                "fvg": False, "pre_liq": False, "cross_margin": False,
+                "scale_out": False, "no_sl": False, "auto_margin": False,
+            },
+            {
+                "name": "SB_Level_Guardian",
+                "leverage": 75,
+                "fixed_tp_pct": False,    # Uses dynamic 15m swing TP
+                "sl_pct": 0.0020,         # 0.20% hard SL
+                "scale_out": True,        # Take half at TP1 (0.15%)
+                "tp1_pct": 0.0015,        # TP1 at 0.15%
+                "htf": False, "delta": False, "rsi": False,
+                "fvg": False, "pre_liq": False, "cross_margin": False,
+                "no_sl": False, "auto_margin": False,
+            },
         ]
 
         # symbol -> state dict
@@ -234,12 +253,14 @@ class LogicEngine:
                 config = pos.get("config", {})
                 hit_time = False
                 
-                if config.get("time_exit"):
-                    entry_time = datetime.datetime.fromisoformat(pos["timestamp"])
-                    now = datetime.datetime.now(datetime.timezone.utc)
-                    if (now - entry_time).total_seconds() >= 900:
-                        hit_time = True
-                        exit_price = data["c"]
+                time_limit_minutes = config.get("time_exit_minutes", 0)
+                if time_limit_minutes > 0:
+                    entry_time_ms = pos.get("timestamp_ms", 0)
+                    current_time_ms = data.get("t", 0)
+                    if entry_time_ms > 0 and current_time_ms > 0:
+                        if (current_time_ms - entry_time_ms) >= (time_limit_minutes * 60 * 1000):
+                            hit_time = True
+                            exit_price = data["c"]
                 
                 if config.get("cross_margin"):
                     size = (pos["margin"] * pos["leverage"]) / pos["entry"]
@@ -280,6 +301,11 @@ class LogicEngine:
                         pos["scaled_out"] = True
                         pos["sl"] = pos["entry"]
                     
+                    if config.get("scale_out") and pos.get("scaled_out"):
+                        trail_sl = data["c"] * (1 - 0.0015)
+                        if trail_sl > pos["sl"]:
+                            pos["sl"] = trail_sl
+                    
                     if not hit_time:
                         if data["h"] >= pos["tp"]:
                             hit_tp = True
@@ -294,6 +320,11 @@ class LogicEngine:
                     if config.get("scale_out") and not pos.get("scaled_out") and data["l"] <= pos.get("tp1", pos["tp"]):
                         pos["scaled_out"] = True
                         pos["sl"] = pos["entry"]
+                        
+                    if config.get("scale_out") and pos.get("scaled_out"):
+                        trail_sl = data["c"] * (1 + 0.0015)
+                        if trail_sl < pos["sl"]:
+                            pos["sl"] = trail_sl
                         
                     if not hit_time:
                         if data["l"] <= pos["tp"]:
@@ -314,7 +345,7 @@ class LogicEngine:
                     all_deltas = delta_history + [current_delta]
                     rolling_delta = sum(all_deltas) / len(all_deltas) if all_deltas else 0
                     
-                    avg_delta = 50000.0 # Standardize volume scale
+                    avg_delta = pos.get("avg_vol", 50000.0) / 60.0 # Approximate 1-minute delta scale from 15m volume
                     posterior_prob = self.risk_engine.calculate_live_bayesian_update(stats["win_rate"], rolling_delta, avg_delta, pos["direction"])
                     live_ev = self.risk_engine.calculate_ev(posterior_prob, stats["avg_win"], stats["avg_loss"])
                     if live_ev < 0:
@@ -382,12 +413,14 @@ class LogicEngine:
                 config = hist_pos.get("config", {})
                 hit_time = False
                 
-                if config.get("time_exit"):
-                    entry_time = datetime.datetime.fromisoformat(hist_pos["timestamp"])
-                    now = datetime.datetime.now(datetime.timezone.utc)
-                    if (now - entry_time).total_seconds() >= 900:
-                        hit_time = True
-                        exit_price = data["c"]
+                time_limit_minutes = config.get("time_exit_minutes", 0)
+                if time_limit_minutes > 0:
+                    entry_time_ms = hist_pos.get("timestamp_ms", 0)
+                    current_time_ms = data.get("t", 0)
+                    if entry_time_ms > 0 and current_time_ms > 0:
+                        if (current_time_ms - entry_time_ms) >= (time_limit_minutes * 60 * 1000):
+                            hit_time = True
+                            exit_price = data["c"]
                         
                 if config.get("cross_margin"):
                     # For signal history simulation, assume a virtual $1000 balance to avoid early liquidation
@@ -435,6 +468,11 @@ class LogicEngine:
                         hist_pos["scaled_out"] = True
                         hist_pos["sl"] = hist_pos["entry"]
                         
+                    if config.get("scale_out") and hist_pos.get("scaled_out"):
+                        trail_sl = data["c"] * (1 - 0.0015)
+                        if trail_sl > hist_pos["sl"]:
+                            hist_pos["sl"] = trail_sl
+                        
                     if not hit_time:
                         if data["h"] >= hist_pos["tp"]:
                             hit_tp = True
@@ -449,6 +487,11 @@ class LogicEngine:
                     if config.get("scale_out") and not hist_pos.get("scaled_out") and data["l"] <= hist_pos.get("tp1", hist_pos["tp"]):
                         hist_pos["scaled_out"] = True
                         hist_pos["sl"] = hist_pos["entry"]
+                        
+                    if config.get("scale_out") and hist_pos.get("scaled_out"):
+                        trail_sl = data["c"] * (1 + 0.0015)
+                        if trail_sl < hist_pos["sl"]:
+                            hist_pos["sl"] = trail_sl
                         
                     if not hit_time:
                         if data["l"] <= hist_pos["tp"]:
@@ -469,7 +512,7 @@ class LogicEngine:
                     all_deltas = delta_history + [current_delta]
                     rolling_delta = sum(all_deltas) / len(all_deltas) if all_deltas else 0
                     
-                    avg_delta = 50000.0
+                    avg_delta = hist_pos.get("avg_vol", 50000.0) / 60.0
                     posterior_prob = self.risk_engine.calculate_live_bayesian_update(stats["win_rate"], rolling_delta, avg_delta, hist_pos["direction"])
                     live_ev = self.risk_engine.calculate_ev(posterior_prob, stats["avg_win"], stats["avg_loss"])
                     if live_ev < 0:
@@ -777,9 +820,9 @@ class LogicEngine:
             # (no penalty if not enough history — condition bonuses carry it)
 
             # ── Regime match bonuses ────────────────────────────────────────
-            if name == "S11_Fixed_Pct_TP" and regime != "Chop":
+            if name == "SA_Level_Scalp" and regime != "Chop":
                 score += 35 * regime_conf
-            if name == "S12_NoSL_MarginBoost" and regime == "Chop":
+            if name == "SB_Level_Guardian" and regime == "Chop":
                 score += 35 * regime_conf
 
             # ── Global context bonuses ──────────────────────────────────────
@@ -787,8 +830,8 @@ class LogicEngine:
             if in_prime_session: score += 8   # Prime session is higher quality
 
             # ── Tiebreaker: slight preference for regime-matched strategy ───
-            if (regime != "Chop" and name == "S11_Fixed_Pct_TP") or \
-               (regime == "Chop" and name == "S12_NoSL_MarginBoost"):
+            if (regime != "Chop" and name == "SA_Level_Scalp") or \
+               (regime == "Chop" and name == "SB_Level_Guardian"):
                 score += 5
 
             scores_log[name] = round(score, 1)
@@ -801,7 +844,7 @@ class LogicEngine:
 
         # Final fallback: if everything got disqualified, use regime default
         if best_strategy is None:
-            fallback_name = "S12_NoSL_MarginBoost" if regime == "Chop" else "S11_Fixed_Pct_TP"
+            fallback_name = "SB_Level_Guardian" if regime == "Chop" else "SA_Level_Scalp"
             best_strategy = next(
                 (s for s in self.active_strategies if s["name"] == fallback_name),
                 self.active_strategies[0]
@@ -870,7 +913,7 @@ class LogicEngine:
         is_green = c_close > c_open
 
         # Fix 9: Lower volume threshold during prime sessions (institutional flow is more organic)
-        vol_threshold = 1.3 if in_prime_session else 1.5
+        vol_threshold = 1.1 if in_prime_session else 1.3
         vol_surge = c_vol > (vol_threshold * avg_vol)
 
         state["vol_ok"] = vol_surge
@@ -987,7 +1030,7 @@ class LogicEngine:
                 elif c_high > sweep_high:
                     cooldown = state.get("swept_level_cooldown", {})
                     level_key = round(sweep_high, 1)
-                    if level_key not in cooldown or len(history) - cooldown[level_key] >= 10:
+                    if level_key not in cooldown or len(history) - cooldown[level_key] >= 20:
                         state["setup_state"] = "SWEPT_HIGH"
                         state["target_tp"] = min([c["l"] for c in history[-61:-1]]) if len(history) >= 61 else c_low
                         state["sweep_is_premium"] = d1_high > 0 and c_high > d1_high
@@ -996,7 +1039,7 @@ class LogicEngine:
                 elif c_low < sweep_low:
                     cooldown = state.get("swept_level_cooldown", {})
                     level_key = round(sweep_low, 1)
-                    if level_key not in cooldown or len(history) - cooldown[level_key] >= 10:
+                    if level_key not in cooldown or len(history) - cooldown[level_key] >= 20:
                         state["setup_state"] = "SWEPT_LOW"
                         state["target_tp"] = max([c["h"] for c in history[-61:-1]]) if len(history) >= 61 else c_high
                         state["sweep_is_premium"] = d1_low > 0 and c_low < d1_low
@@ -1005,7 +1048,7 @@ class LogicEngine:
                 elif state.get("15m_swing_high", 0) > 0 and c_high > state["15m_swing_high"]:
                     cooldown = state.get("swept_level_cooldown", {})
                     level_key = round(state["15m_swing_high"], 1)
-                    if level_key not in cooldown or len(history) - cooldown[level_key] >= 10:
+                    if level_key not in cooldown or len(history) - cooldown[level_key] >= 20:
                         state["setup_state"] = "SWEPT_HIGH"
                         state["target_tp"] = min([c["l"] for c in history[-15:-1]]) if len(history) >= 15 else c_low
                         state["sweep_is_premium"] = False
@@ -1013,7 +1056,7 @@ class LogicEngine:
                 elif state.get("15m_swing_low", 0) > 0 and c_low < state["15m_swing_low"]:
                     cooldown = state.get("swept_level_cooldown", {})
                     level_key = round(state["15m_swing_low"], 1)
-                    if level_key not in cooldown or len(history) - cooldown[level_key] >= 10:
+                    if level_key not in cooldown or len(history) - cooldown[level_key] >= 20:
                         state["setup_state"] = "SWEPT_LOW"
                         state["target_tp"] = max([c["h"] for c in history[-15:-1]]) if len(history) >= 15 else c_high
                         state["sweep_is_premium"] = False
@@ -1072,6 +1115,33 @@ class LogicEngine:
         # ── INTRABAR: Trigger check (Fix 2 — runs every tick, not just on candle close) ──
         setup_state     = state.get("setup_state", "WAITING")
         trigger_direction = None
+
+        # ── NEW: Intrabar 4H Touch Entry ──────────────────────────────
+        # Fires immediately on touch without waiting for sweep confirmation
+        if setup_state == "WAITING" and not state.get("intrabar_signal_taken"):
+            touched_high = current_candle["h"] >= sweep_high
+            touched_low  = current_candle["l"] <= sweep_low
+            
+            if touched_high and vol_surge and htf_bearish and not current_candle.get("is_closed"):
+                state["intrabar_signal_taken"] = True
+                state["setup_candle"] = current_candle
+                import uuid
+                strategy, _ = self._select_best_strategy(
+                    symbol, "SHORT", state, self.trade_data.get(symbol, {}),
+                    current_candle["h"], current_candle["l"], current_candle["c"], 0
+                )
+                await self._trigger_signal(symbol, "SHORT", current_candle, current_candle,
+                                           avg_vol, sweep_low, strategy, str(uuid.uuid4()), 1.0, entry_type="touch")
+                                           
+            elif touched_low and vol_surge and htf_bullish and not current_candle.get("is_closed"):
+                state["intrabar_signal_taken"] = True
+                state["setup_candle"] = current_candle
+                strategy, _ = self._select_best_strategy(
+                    symbol, "LONG", state, self.trade_data.get(symbol, {}),
+                    current_candle["h"], current_candle["l"], current_candle["c"], 0
+                )
+                await self._trigger_signal(symbol, "LONG", current_candle, current_candle,
+                                           avg_vol, sweep_high, strategy, str(uuid.uuid4()), 1.0, entry_type="touch")
 
         if setup_state == "SHORT_SETUP_FORMED" and not state.get("intrabar_signal_taken"):
             setup_candle = state.get("setup_candle")
@@ -1132,17 +1202,6 @@ class LogicEngine:
                     print(f"[{symbol}] FUNDING BIAS: Extreme negative rate ({funding_rate:.5f}). Skipping SHORT.")
                     return
 
-            # Fix 8: 15m structure break confluence — require price to have broken a 15m swing
-            if trigger_direction == "SHORT":
-                m15_swing_low = state.get("15m_swing_low", 0)
-                if m15_swing_low > 0 and current_candle["c"] > m15_swing_low:
-                    print(f"[{symbol}] CONFLUENCE FAIL: Price {current_candle['c']:.4f} still above 15m swing low {m15_swing_low:.4f}. Skipping SHORT.")
-                    return
-            if trigger_direction == "LONG":
-                m15_swing_high = state.get("15m_swing_high", 0)
-                if m15_swing_high > 0 and current_candle["c"] < m15_swing_high:
-                    print(f"[{symbol}] CONFLUENCE FAIL: Price {current_candle['c']:.4f} still below 15m swing high {m15_swing_high:.4f}. Skipping LONG.")
-                    return
 
             import uuid
             setup_id = str(uuid.uuid4())
@@ -1232,65 +1291,38 @@ class LogicEngine:
                             kelly_fraction = self.risk_engine.calculate_kelly_fraction(stats["win_rate"], stats["avg_win"], stats["avg_loss"], hmm_conf)
                             await self._trigger_signal(symbol, "LONG", current_candle, setup_candle, avg_vol, state["target_tp"], strategy, setup_id, kelly_fraction)
 
-        # ── S13: 1m EMA Cross Scalp ───────────────────────────────────────────
-        # Independent of the sweep state machine — fires on momentum crosses
-        if not is_historical and not state.get("ema_cross_signal_taken"):
-            ema20 = state.get("1m_ema20", 0)
-            ema50 = state.get("1m_ema50", 0)
-            rsi   = state.get("rsi_14", 50)
 
-            if ema20 > 0 and ema50 > 0 and len(history) >= 3:
-                # Need EMA from previous candle to detect cross
-                prev_closes = [c["c"] for c in history[-52:]]
-                if len(prev_closes) >= 52:
-                    # Simple EMA helper
-                    def _calc_ema(prices, period):
-                        k = 2 / (period + 1)
-                        ema = prices[0]
-                        for p in prices[1:]:
-                            ema = (p * k) + (ema * (1 - k))
-                        return ema
-                        
-                    prev_ema20 = _calc_ema(prev_closes[:-1], 20)
-                    prev_ema50 = _calc_ema(prev_closes[:-1], 50)
-
-                    ema_cross_direction = None
-                    if ema20 > ema50 and prev_ema20 <= prev_ema50 and rsi < 65:
-                        ema_cross_direction = "LONG"
-                        state["ema_cross_signal_taken"] = True
-                    elif ema20 < ema50 and prev_ema20 >= prev_ema50 and rsi > 35:
-                        ema_cross_direction = "SHORT"
-                        state["ema_cross_signal_taken"] = True
-
-                    if ema_cross_direction:
-                        s13 = next((s for s in self.active_strategies if s["name"] == "S13_EMA_Cross_Scalp"), None)
-                        if s13:
-                            setup_id_s13 = str(uuid.uuid4())
-                            await self._trigger_signal(
-                                symbol, ema_cross_direction, current_candle,
-                                current_candle, avg_vol, 0, s13, setup_id_s13, 1.0
-                            )
 
         # Reset EMA cross signal taken on new candle
         if current_candle.get("is_closed"):
             state["ema_cross_signal_taken"] = False
 
-    async def _trigger_signal(self, symbol, direction, trigger_candle, setup_candle, avg_vol, target_tp, strategy=None, setup_id=None, kelly_fraction=1.0):
+    async def _trigger_signal(self, symbol, direction, trigger_candle, setup_candle, avg_vol, target_tp, strategy=None, setup_id=None, kelly_fraction=1.0, entry_type="sweep"):
         # Fix 10: Max concurrent positions limit — avoid over-exposure
-        MAX_CONCURRENT_POSITIONS = 5
-        open_count = sum(1 for s in self.signal_history if s.get("status") == "PENDING")
-        if open_count >= MAX_CONCURRENT_POSITIONS:
-            print(f"[{symbol}] POSITION LIMIT: {open_count} open positions >= max {MAX_CONCURRENT_POSITIONS}. Skipping signal.")
+        # Per symbol limit
+        MAX_PER_SYMBOL = 2
+        MAX_TOTAL = 10
+        open_symbol = sum(1 for s in self.signal_history if s.get("status") == "PENDING" and s.get("symbol") == symbol)
+        open_total  = sum(1 for s in self.signal_history if s.get("status") == "PENDING")
+        if open_symbol >= MAX_PER_SYMBOL or open_total >= MAX_TOTAL:
+            print(f"[{symbol}] POSITION LIMIT: {open_symbol} for symbol, {open_total} total. Skipping signal.")
             return
 
         if strategy is None:
-            strategy = {"name": "S0_Baseline_400x", "leverage": 50, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False}
+            strategy = {"name": "SA_Level_Scalp", "leverage": 50, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False}
         strategy_name = strategy["name"]
         
         trade_state = self.market_state.get(symbol, {})
         BUFFER = 0.0005 # 0.05% buffer
 
-        if strategy.get("no_sl"):
+        if entry_type == "touch":
+            sl_pct = strategy.get("sl_pct", 0.0012)
+            if direction == "SHORT":
+                base_sl = trigger_candle["c"] * (1 + sl_pct)
+            else:
+                base_sl = trigger_candle["c"] * (1 - sl_pct)
+            dist_pct = sl_pct
+        elif strategy.get("no_sl"):
             if direction == "SHORT":
                 base_sl = trigger_candle["c"] * 1.5
             else:
@@ -1330,8 +1362,9 @@ class LogicEngine:
         if direction == "SHORT":
             risk = sl - trigger_candle["c"]
             if strategy.get("fixed_tp_pct"):
-                tp = trigger_candle["c"] * (1 - 0.0015)
-                tp1 = trigger_candle["c"] * (1 - 0.00075)
+                tp_pct = strategy.get("tp_pct", 0.0015)
+                tp = trigger_candle["c"] * (1 - tp_pct)
+                tp1 = trigger_candle["c"] * (1 - (tp_pct / 2.0))
             else:
                 fixed_2R_tp = trigger_candle["c"] - (2 * risk)
                 m15_target  = trade_state.get("15m_swing_low", 0)
@@ -1344,12 +1377,16 @@ class LogicEngine:
                         tp = fixed_2R_tp
                 else:
                     tp = fixed_2R_tp
-                tp1 = trigger_candle["c"] - risk  # Scale-out TP1 at 1R
+                if strategy.get("tp1_pct"):
+                    tp1 = trigger_candle["c"] * (1 - strategy["tp1_pct"])
+                else:
+                    tp1 = trigger_candle["c"] - risk  # Scale-out TP1 at 1R
         else:
             risk = trigger_candle["c"] - sl
             if strategy.get("fixed_tp_pct"):
-                tp = trigger_candle["c"] * (1 + 0.0015)
-                tp1 = trigger_candle["c"] * (1 + 0.00075)
+                tp_pct = strategy.get("tp_pct", 0.0015)
+                tp = trigger_candle["c"] * (1 + tp_pct)
+                tp1 = trigger_candle["c"] * (1 + (tp_pct / 2.0))
             else:
                 fixed_2R_tp = trigger_candle["c"] + (2 * risk)
                 m15_target  = trade_state.get("15m_swing_high", 0)
@@ -1362,7 +1399,10 @@ class LogicEngine:
                         tp = fixed_2R_tp
                 else:
                     tp = fixed_2R_tp
-                tp1 = trigger_candle["c"] + risk  # Scale-out TP1 at 1R
+                if strategy.get("tp1_pct"):
+                    tp1 = trigger_candle["c"] * (1 + strategy["tp1_pct"])
+                else:
+                    tp1 = trigger_candle["c"] + risk  # Scale-out TP1 at 1R
 
         vol_ratio = setup_candle.get("v", 0) / avg_vol if (avg_vol > 0 and setup_candle) else 0
 
@@ -1426,10 +1466,10 @@ class LogicEngine:
             strategy_metric = "15m Timer Enabled"
         elif strategy['name'] == 'S10_FVG_Conf':
             strategy_metric = "FVG Confirmed"
-        elif strategy['name'] == 'S11_Fixed_Pct_TP':
+        elif strategy['name'] == 'SA_Level_Scalp':
             strategy_metric = "0.15% Fixed TP"
-        elif strategy['name'] == 'S12_NoSL_MarginBoost':
-            strategy_metric = "400x Auto-Margin"
+        elif strategy['name'] == 'SB_Level_Guardian':
+            strategy_metric = "75x Scale-Out"
         else:
             strategy_metric = "50x Static"
 
@@ -1463,6 +1503,7 @@ class LogicEngine:
             "strategy_metric": strategy_metric,
             "initial_margin": 5.0,
             "margin": 5.0,
+            "avg_vol": avg_vol,
             "margin_adds": 0
         }
         self.signal_history.append(hist_signal)
