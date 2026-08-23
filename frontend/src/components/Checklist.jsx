@@ -63,8 +63,18 @@ export default function Checklist({ killzoneActive, symbolState, tradeState, fil
           </div>
         ))}
       </div>
-      <div className="mt-4 pt-3 border-t border-slate-700 text-sm text-slate-400">
+      <div className="mt-4 pt-3 border-t border-slate-700 text-sm text-slate-400 space-y-1">
         <p>State: <span className="font-mono text-slate-300">{symbolState?.setup_state || 'WAITING'}</span></p>
+        <div className="flex justify-between items-center text-xs">
+          <span>Active Sweep: {symbolState?.active_sweep_type ? <span className="text-amber-400">{symbolState.active_sweep_type}</span> : 'None'}</span>
+          <span className="font-mono text-slate-300">{symbolState?.active_sweep_level ? `$${symbolState.active_sweep_level}` : '-'}</span>
+        </div>
+        <div className="flex justify-between items-center text-xs">
+          <span>Premium Sweep:</span>
+          <span className={symbolState?.sweep_is_premium ? 'text-emerald-400' : 'text-slate-500'}>
+             {symbolState?.sweep_is_premium ? 'YES' : 'NO'}
+          </span>
+        </div>
       </div>
     </div>
   );

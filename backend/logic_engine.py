@@ -6,10 +6,15 @@ import json
 import os
 import uuid
 import numpy as np
+import logging
+from typing import Dict, List, Any
+import copy
 from deepseek_client import DeepSeekClient
 from google_sheets_client import GoogleSheetsClient
 from hmm_engine import HMMEngine
 from risk_engine import RiskEngine
+
+logger = logging.getLogger(__name__)
 
 class LogicEngine:
     def __init__(self):
@@ -18,25 +23,25 @@ class LogicEngine:
         self.active_strategies = [
             {
                 "name": "SA_Level_Scalp",
-                "leverage": 50,
+                "leverage": 400,
                 "fixed_tp_pct": True,
                 "tp_pct": 0.0015,         # 0.15%
                 "sl_pct": 0.0012,         # 0.12% hard SL
                 "time_exit_minutes": 8,   # Kill if no hit in 8 min
                 "htf": False, "delta": False, "rsi": False,
                 "fvg": False, "pre_liq": False, "cross_margin": False,
-                "scale_out": False, "no_sl": False, "auto_margin": False,
+                "scale_out": False, "no_sl": False, "auto_margin": True,
             },
             {
                 "name": "SB_Level_Guardian",
-                "leverage": 75,
+                "leverage": 400,
                 "fixed_tp_pct": False,    # Uses dynamic 15m swing TP
                 "sl_pct": 0.0020,         # 0.20% hard SL
                 "scale_out": True,        # Take half at TP1 (0.15%)
                 "tp1_pct": 0.0015,        # TP1 at 0.15%
                 "htf": False, "delta": False, "rsi": False,
                 "fvg": False, "pre_liq": False, "cross_margin": False,
-                "no_sl": False, "auto_margin": False,
+                "no_sl": False, "auto_margin": True,
             },
         ]
 
@@ -72,14 +77,14 @@ class LogicEngine:
                 with open("trade_history.json", "r") as f:
                     self.signal_history = json.load(f)
         except Exception as e:
-            print(f"Error loading history: {e}")
+            logger.error(f"Error loading history: {e}")
 
     def _save_history(self):
         try:
             with open("trade_history.json", "w") as f:
                 json.dump(self.signal_history, f, indent=2)
         except Exception as e:
-            print(f"Error saving history: {e}")
+            logger.error(f"Error saving history: {e}")
 
     def clear_history(self):
         self.signal_history = []
@@ -156,6 +161,13 @@ class LogicEngine:
                 # Fix 8: 15m swing structure pivots
                 "15m_swing_high": 0,
                 "15m_swing_low": 0,
+                "1h_swing_high": 0,
+                "1h_swing_low": 0,
+                "1m_swing_highs": [],
+                "1m_swing_lows": [],
+                "active_sweep_level": 0.0,
+                "active_sweep_type": "", 
+                "sweep_wick_extreme": 0.0,
                 # Fix 7: Live funding rate from MEXC
                 "funding_rate": 0.0001,
                 # Fix 6: Daily volatility flag
@@ -269,8 +281,8 @@ class LogicEngine:
                     else:
                         liq_price = pos["entry"] + (self.demo_balance / size) if size > 0 else float('inf')
                 else:
-                    initial_margin = pos.get("initial_margin", pos.get("margin", 5.0))
-                    total_margin = pos.get("margin", 5.0)
+                    initial_margin = pos.get("initial_margin", pos.get("margin", 6.0))
+                    total_margin = pos.get("margin", 6.0)
                     size = (initial_margin * pos.get("leverage", 50)) / pos["entry"]
                     
                     if pos["direction"] == "LONG":
@@ -289,7 +301,7 @@ class LogicEngine:
                         if needs_margin and self.demo_balance >= initial_margin:
                             pos["margin"] += initial_margin
                             pos["margin_adds"] = pos.get("margin_adds", 0) + 1
-                            print(f"[{symbol}] AUTO MARGIN BOOST! Added ${initial_margin:.2f} (Total adds: {pos['margin_adds']})")
+                            logger.info(f"[{symbol}] AUTO MARGIN BOOST! Added ${initial_margin:.2f} (Total adds: {pos['margin_adds']})")
                             total_margin = pos["margin"]
                             if pos["direction"] == "LONG":
                                 liq_price = pos["entry"] - (total_margin / size) if size > 0 else 0
@@ -351,7 +363,7 @@ class LogicEngine:
                     if live_ev < 0:
                         bayesian_bailout = True
                         exit_price = data["c"]
-                        print(f"[{symbol}] DEMO BAYESIAN BAILOUT! Live EV {live_ev:.4f} < 0")
+                        logger.info(f"[{symbol}] DEMO BAYESIAN BAILOUT! Live EV {live_ev:.4f} < 0")
                         
                 if hit_liq or hit_tp or hit_sl or hit_time or bayesian_bailout:
                     if hit_liq:
@@ -385,7 +397,7 @@ class LogicEngine:
                     
                     self.demo_balance += pnl
                     closed_positions.append(pos)
-                    print(f"DEMO TRADE CLOSED: {symbol} {pos['direction']} - PnL: ${pnl:.2f} (Balance: ${self.demo_balance:.2f})")
+                    logger.info(f"DEMO TRADE CLOSED: {symbol} {pos['direction']} - PnL: ${pnl:.2f} (Balance: ${self.demo_balance:.2f})")
                     
             # Remove closed positions
             self.demo_positions = [p for p in self.demo_positions if p not in closed_positions]
@@ -425,7 +437,7 @@ class LogicEngine:
                 if config.get("cross_margin"):
                     # For signal history simulation, assume a virtual $1000 balance to avoid early liquidation
                     virtual_balance = 1000.0
-                    margin = 5.0
+                    margin = 6.0
                     config_lev = config.get("leverage", 400)
                     leverage = float(hist_pos.get("computed_leverage", config_lev if config_lev != "auto" else 400))
                     size = (margin * leverage) / hist_pos["entry"]
@@ -437,8 +449,8 @@ class LogicEngine:
                 else:
                     config_lev = config.get("leverage", 400)
                     leverage = float(hist_pos.get("computed_leverage", config_lev if config_lev != "auto" else 400))
-                    initial_margin = hist_pos.get("initial_margin", hist_pos.get("margin", 5.0))
-                    total_margin = hist_pos.get("margin", 5.0)
+                    initial_margin = hist_pos.get("initial_margin", hist_pos.get("margin", 6.0))
+                    total_margin = hist_pos.get("margin", 6.0)
                     size = (initial_margin * leverage) / hist_pos["entry"]
                     
                     if hist_pos["direction"] == "LONG":
@@ -518,12 +530,12 @@ class LogicEngine:
                     if live_ev < 0:
                         bayesian_bailout = True
                         exit_price = data["c"]
-                        print(f"[{symbol}] HISTORY BAYESIAN BAILOUT! Live EV {live_ev:.4f} < 0")
+                        logger.info(f"[{symbol}] HISTORY BAYESIAN BAILOUT! Live EV {live_ev:.4f} < 0")
                         
                 if hit_liq or hit_tp or hit_sl or hit_time or bayesian_bailout:
                     # Read margin/leverage from strategy config (fallback to defaults)
                     config = hist_pos.get("config", {})
-                    margin = 5.0
+                    margin = 6.0
                     config_lev = config.get("leverage", 400)
                     leverage = float(hist_pos.get("computed_leverage", config_lev if config_lev != "auto" else 400))
                     pos_size = margin * leverage
@@ -736,15 +748,28 @@ class LogicEngine:
             elif c1["l"] > c3["h"]: # Bearish FVG
                 self.market_state[symbol]["15m_fvg_bearish"] = (c3["h"], c1["l"])
 
-        # Fix 8: Detect 15m swing highs and lows (2-candle pivot)
-        # Used for: confluence requirement and dynamic TP targeting
+        # Detect 1m, 15m, 1h swing highs and lows (2-candle pivot)
+        if interval == "Min1" and len(history) >= 5:
+            if history[-3]["h"] > history[-4]["h"] and history[-3]["h"] > history[-2]["h"]:
+                if "1m_swing_highs" not in self.market_state[symbol]: self.market_state[symbol]["1m_swing_highs"] = []
+                self.market_state[symbol]["1m_swing_highs"].append(history[-3]["h"])
+                if len(self.market_state[symbol]["1m_swing_highs"]) > 5: self.market_state[symbol]["1m_swing_highs"].pop(0)
+            if history[-3]["l"] < history[-4]["l"] and history[-3]["l"] < history[-2]["l"]:
+                if "1m_swing_lows" not in self.market_state[symbol]: self.market_state[symbol]["1m_swing_lows"] = []
+                self.market_state[symbol]["1m_swing_lows"].append(history[-3]["l"])
+                if len(self.market_state[symbol]["1m_swing_lows"]) > 5: self.market_state[symbol]["1m_swing_lows"].pop(0)
+        
         if interval == "Min15" and len(history) >= 5:
-            # A swing high: middle candle is higher than both neighbors
             if history[-3]["h"] > history[-4]["h"] and history[-3]["h"] > history[-2]["h"]:
                 self.market_state[symbol]["15m_swing_high"] = history[-3]["h"]
-            # A swing low: middle candle is lower than both neighbors
             if history[-3]["l"] < history[-4]["l"] and history[-3]["l"] < history[-2]["l"]:
                 self.market_state[symbol]["15m_swing_low"] = history[-3]["l"]
+                
+        if interval == "Min60" and len(history) >= 5:
+            if history[-3]["h"] > history[-4]["h"] and history[-3]["h"] > history[-2]["h"]:
+                self.market_state[symbol]["1h_swing_high"] = history[-3]["h"]
+            if history[-3]["l"] < history[-4]["l"] and history[-3]["l"] < history[-2]["l"]:
+                self.market_state[symbol]["1h_swing_low"] = history[-3]["l"]
 
         # Fix 5: Compute 4H session high/low from the 2 most recent completed 4H candles
         # This gives a fresh, actionable sweep level that updates every 4 hours (much more frequent than 1D)
@@ -840,7 +865,7 @@ class LogicEngine:
                 best_score    = score
                 best_strategy = strategy
 
-        print(f"[{symbol}] Strategy scores ({direction}): {scores_log}")
+        logger.info(f"[{symbol}] Strategy scores ({direction}): {scores_log}")
 
         # Final fallback: if everything got disqualified, use regime default
         if best_strategy is None:
@@ -850,9 +875,9 @@ class LogicEngine:
                 self.active_strategies[0]
             )
             best_score = 0
-            print(f"[{symbol}] All strategies disqualified — fallback to {fallback_name}")
+            logger.info(f"[{symbol}] All strategies disqualified — fallback to {fallback_name}")
 
-        print(f"[{symbol}] SELECTED strategy: {best_strategy['name']} (score: {best_score:.1f})")
+        logger.info(f"[{symbol}] SELECTED strategy: {best_strategy['name']} (score: {best_score:.1f})")
         return best_strategy, best_score
 
     async def _evaluate_1m_logic(self, symbol, current_candle, is_historical=False):
@@ -887,12 +912,7 @@ class LogicEngine:
         d1_high = state.get("1d_high", 0)
         d1_low  = state.get("1d_low", 0)
 
-        # Fix 5: Use 4H session levels as primary sweep targets, fall back to 1D
-        sweep_high = state.get("4h_session_high") or d1_high
-        sweep_low  = state.get("4h_session_low")  or d1_low
-
-        # Need enough history and at least one sweep level defined
-        if sweep_high == 0 or sweep_low == 0 or len(history) < 60:
+        if len(history) < 60:
             return
 
         price = current_candle["c"]
@@ -912,23 +932,43 @@ class LogicEngine:
         is_red = c_close < c_open
         is_green = c_close > c_open
 
-        # Fix 9: Lower volume threshold during prime sessions (institutional flow is more organic)
         vol_threshold = 1.1 if in_prime_session else 1.3
         vol_surge = c_vol > (vol_threshold * avg_vol)
-
         state["vol_ok"] = vol_surge
 
-        # Fix 6: Daily volatility flag — on big trend days, counter-trend sweeps are dangerous
         if d1_high > 0 and d1_low > 0:
             daily_range_pct = (d1_high - d1_low) / d1_low
-            state["high_volatility_day"] = daily_range_pct > 0.025  # > 2.5% = strong trend day
+            state["high_volatility_day"] = daily_range_pct > 0.025
         else:
             state["high_volatility_day"] = False
 
-        # HMM Features — use 4H sweep levels for proximity calculation
+        # Multi-Level Liquidity Map
+        valid_highs = [
+            ("1D", state.get("1d_high", 0)),
+            ("4H", state.get("4h_session_high", 0)),
+            ("1H", state.get("1h_swing_high", 0)),
+            ("15m", state.get("15m_swing_high", 0))
+        ]
+        valid_lows = [
+            ("1D", state.get("1d_low", 0)),
+            ("4H", state.get("4h_session_low", 0)),
+            ("1H", state.get("1h_swing_low", 0)),
+            ("15m", state.get("15m_swing_low", 0))
+        ]
+        
+        valid_highs = [x for x in valid_highs if x[1] > 0]
+        valid_lows = [x for x in valid_lows if x[1] > 0]
+        
+        # Sort by proximity to current price
+        valid_highs.sort(key=lambda x: abs(c_close - x[1]))
+        valid_lows.sort(key=lambda x: abs(c_close - x[1]))
+
+        closest_high = valid_highs[0][1] if valid_highs else 0.0
+        closest_low = valid_lows[0][1] if valid_lows else 0.0
+
         vol_velocity = c_vol / avg_vol if avg_vol > 0 else 1.0
-        dist_high = abs(c_close - sweep_high) / sweep_high if sweep_high > 0 else 1.0
-        dist_low  = abs(c_close - sweep_low)  / sweep_low  if sweep_low  > 0 else 1.0
+        dist_high = abs(c_close - closest_high) / closest_high if closest_high > 0 else 1.0
+        dist_low  = abs(c_close - closest_low)  / closest_low  if closest_low  > 0 else 1.0
         liq_proximity = min(dist_high, dist_low)
         
         if len(history) >= 14:
@@ -946,12 +986,10 @@ class LogicEngine:
         if len(state["hmm_features"]) > 1000:
             state["hmm_features"].pop(0)
 
-        # Predict current regime
         regime_name, regime_conf = self.hmm_engine.predict_regime(current_features)
         state["regime"] = regime_name
         state["regime_conf"] = regime_conf
         
-        # Periodic Retrain (e.g. if we reach 1000 candles and not training)
         import time
         now = time.time()
         if (len(state["hmm_features"]) >= 1000 
@@ -962,7 +1000,6 @@ class LogicEngine:
             
         state["regime_reliable"] = getattr(self.hmm_engine, "converged", False)
 
-        # Fix 2: Reset intrabar signal flag when a brand-new candle starts
         last_seen_t = state.get("last_seen_candle_t")
         if last_seen_t != current_candle["t"]:
             state["intrabar_signal_taken"] = False
@@ -970,266 +1007,169 @@ class LogicEngine:
             
         if is_historical:
             return
-            
-        def _get_regime_thresholds(st):
-            r = st.get("regime", "Chop")
-            reliable = st.get("regime_reliable", False)
-            if not reliable:
-                return {"min_body": 0.20, "require_vol": False, "ttl": 8}
-            if r == "Liquidation Cascade":
-                return {"min_body": 0.00, "require_vol": False, "ttl": 6}
-            elif r == "Trend":
-                return {"min_body": 0.20, "require_vol": False, "ttl": 10}
-            else:  # Chop
-                return {"min_body": 0.30, "require_vol": True, "ttl": 5}
 
-        # ── CLOSE-ONLY: Setup state machine (sweep detection + anchor locking + TTL) ──
+        # ── Setup state machine ──
         if current_candle.get("is_closed", False):
             setup_state = state.get("setup_state", "WAITING")
 
-            # State Resets (if price falls back into the waiting zone)
             if setup_state in ["TRADED_HIGH", "SWEPT_HIGH", "SHORT_SETUP_FORMED"]:
-                if c_close < sweep_high and c_open < sweep_high:
+                lvl = state.get("active_sweep_level", 0.0)
+                if lvl > 0 and c_close < lvl and c_open < lvl:
                     state["setup_state"] = "WAITING"
-                    setup_state = "WAITING"
-                elif setup_state == "TRADED_HIGH":
-                    setup_candle = state.get("setup_candle")
-                    if setup_candle and c_high > setup_candle["h"]:
-                        state["setup_state"] = "SWEPT_HIGH"
-                        setup_state = "SWEPT_HIGH"
             elif setup_state in ["TRADED_LOW", "SWEPT_LOW", "LONG_SETUP_FORMED"]:
-                if c_close > sweep_low and c_open > sweep_low:
+                lvl = state.get("active_sweep_level", 0.0)
+                if lvl > 0 and c_close > lvl and c_open > lvl:
                     state["setup_state"] = "WAITING"
-                    setup_state = "WAITING"
-                elif setup_state == "TRADED_LOW":
-                    setup_candle = state.get("setup_candle")
-                    if setup_candle and c_low < setup_candle["l"]:
-                        state["setup_state"] = "SWEPT_LOW"
-                        setup_state = "SWEPT_LOW"
+
+            setup_state = state.get("setup_state", "WAITING")
 
             if setup_state == "WAITING":
-                # Wick Rejection (Touch and Trade)
-                is_short_rejection = c_high >= sweep_high and c_close < sweep_high and (sweep_high - c_close)/sweep_high >= 0.0005
-                is_long_rejection = c_low <= sweep_low and c_close > sweep_low and (c_close - sweep_low)/sweep_low >= 0.0005
-                
-                if is_short_rejection:
-                    state["setup_state"] = "SHORT_SETUP_FORMED"
-                    state["setup_candle"] = current_candle
-                    regime = state.get("regime", "Chop")
-                    state["ttl"] = 3 if regime == "Liquidation Cascade" else (4 if regime == "Trend" else 5)
-                    state["target_tp"] = min([c["l"] for c in history[-61:-1]]) if len(history) >= 61 else c_low
-                    print(f"[{symbol}] WICK REJECTION SHORT: touched {sweep_high:.4f}, closed {c_close:.4f}. State -> SHORT_SETUP_FORMED")
-                elif is_long_rejection:
-                    state["setup_state"] = "LONG_SETUP_FORMED"
-                    state["setup_candle"] = current_candle
-                    regime = state.get("regime", "Chop")
-                    state["ttl"] = 3 if regime == "Liquidation Cascade" else (4 if regime == "Trend" else 5)
-                    state["target_tp"] = max([c["h"] for c in history[-61:-1]]) if len(history) >= 61 else c_high
-                    print(f"[{symbol}] WICK REJECTION LONG: touched {sweep_low:.4f}, closed {c_close:.4f}. State -> LONG_SETUP_FORMED")
-                # Fix 5: Detect sweep of 4H session level (premium if also breaking 1D level)
-                elif c_high > sweep_high:
-                    cooldown = state.get("swept_level_cooldown", {})
-                    level_key = round(sweep_high, 1)
-                    if level_key not in cooldown or len(history) - cooldown[level_key] >= 20:
+                # Detect Sweeps against all valid levels
+                for l_type, l_val in valid_highs:
+                    if c_high > l_val:
                         state["setup_state"] = "SWEPT_HIGH"
-                        state["target_tp"] = min([c["l"] for c in history[-61:-1]]) if len(history) >= 61 else c_low
-                        state["sweep_is_premium"] = d1_high > 0 and c_high > d1_high
-                        label = " [PREMIUM — also 1D HIGH!]" if state["sweep_is_premium"] else ""
-                        print(f"[{symbol}] SWEPT 4H HIGH ({sweep_high:.4f}).{label} State -> SWEPT_HIGH")
-                elif c_low < sweep_low:
-                    cooldown = state.get("swept_level_cooldown", {})
-                    level_key = round(sweep_low, 1)
-                    if level_key not in cooldown or len(history) - cooldown[level_key] >= 20:
-                        state["setup_state"] = "SWEPT_LOW"
-                        state["target_tp"] = max([c["h"] for c in history[-61:-1]]) if len(history) >= 61 else c_high
-                        state["sweep_is_premium"] = d1_low > 0 and c_low < d1_low
-                        label = " [PREMIUM — also 1D LOW!]" if state["sweep_is_premium"] else ""
-                        print(f"[{symbol}] SWEPT 4H LOW ({sweep_low:.4f}).{label} State -> SWEPT_LOW")
-                elif state.get("15m_swing_high", 0) > 0 and c_high > state["15m_swing_high"]:
-                    cooldown = state.get("swept_level_cooldown", {})
-                    level_key = round(state["15m_swing_high"], 1)
-                    if level_key not in cooldown or len(history) - cooldown[level_key] >= 20:
-                        state["setup_state"] = "SWEPT_HIGH"
-                        state["target_tp"] = min([c["l"] for c in history[-15:-1]]) if len(history) >= 15 else c_low
-                        state["sweep_is_premium"] = False
-                        print(f"[{symbol}] SWEPT 15m HIGH ({state['15m_swing_high']:.4f}). State -> SWEPT_HIGH")
-                elif state.get("15m_swing_low", 0) > 0 and c_low < state["15m_swing_low"]:
-                    cooldown = state.get("swept_level_cooldown", {})
-                    level_key = round(state["15m_swing_low"], 1)
-                    if level_key not in cooldown or len(history) - cooldown[level_key] >= 20:
-                        state["setup_state"] = "SWEPT_LOW"
-                        state["target_tp"] = max([c["h"] for c in history[-15:-1]]) if len(history) >= 15 else c_high
-                        state["sweep_is_premium"] = False
-                        print(f"[{symbol}] SWEPT 15m LOW ({state['15m_swing_low']:.4f}). State -> SWEPT_LOW")
+                        state["active_sweep_level"] = l_val
+                        state["active_sweep_type"] = l_type
+                        state["sweep_wick_extreme"] = c_high
+                        # Liquidity TP target = nearest valid low
+                        state["target_tp"] = valid_lows[0][1] if valid_lows else c_low * 0.99
+                        break
 
-            # Refresh setup_state variable in case it just transitioned
+                if state["setup_state"] == "WAITING":
+                    for l_type, l_val in valid_lows:
+                        if c_low < l_val:
+                            state["setup_state"] = "SWEPT_LOW"
+                            state["active_sweep_level"] = l_val
+                            state["active_sweep_type"] = l_type
+                            state["sweep_wick_extreme"] = c_low
+                            state["target_tp"] = valid_highs[0][1] if valid_highs else c_high * 1.01
+                            break
+
+                # EMA Pullback with Level Confluence
+                ema20_15m = state.get("15m_ema20", 0)
+                is_15m_bullish = state.get("15m_bullish", False)
+                if ema20_15m > 0:
+                    # Confluence check: is EMA near a valid level? (within 0.15%)
+                    near_level_long = any(abs(ema20_15m - l_val)/ema20_15m < 0.0015 for _, l_val in valid_lows)
+                    near_level_short = any(abs(ema20_15m - l_val)/ema20_15m < 0.0015 for _, l_val in valid_highs)
+                    
+                    if is_15m_bullish and c_low <= ema20_15m and c_high > ema20_15m and near_level_long:
+                        state["setup_state"] = "LONG_SETUP_FORMED"
+                        state["setup_candle"] = current_candle
+                        state["ttl"] = 5
+                        state["target_tp"] = valid_highs[0][1] if valid_highs else c_high * 1.002
+                        state["sweep_wick_extreme"] = c_low
+                    elif not is_15m_bullish and c_high >= ema20_15m and c_low < ema20_15m and near_level_short:
+                        state["setup_state"] = "SHORT_SETUP_FORMED"
+                        state["setup_candle"] = current_candle
+                        state["ttl"] = 5
+                        state["target_tp"] = valid_lows[0][1] if valid_lows else c_low * 0.998
+                        state["sweep_wick_extreme"] = c_high
+
             setup_state = state.get("setup_state", "WAITING")
 
             if setup_state == "SWEPT_HIGH":
                 if is_red:
-                    # Fix 3: Setup candle quality check — body must be >= threshold
                     candle_range = c_high - c_low
                     candle_body  = abs(c_close - c_open)
-                    body_ratio   = candle_body / candle_range if candle_range > 0 else 0
-                    thresholds = _get_regime_thresholds(state)
-                    if body_ratio < thresholds["min_body"]:
-                        print(f"[{symbol}] Setup candle REJECTED: body ratio {body_ratio:.2f} < {thresholds['min_body']:.2f} (weak/doji). State -> WAITING.")
-                        state["setup_state"] = "WAITING"
-                    else:
-                        state["setup_state"] = "SHORT_SETUP_FORMED"
-                        state["setup_candle"] = current_candle
-                        state["ttl"] = thresholds["ttl"]
-                        print(f"[{symbol}] Red candle locked (body {body_ratio:.2f}). State -> SHORT_SETUP_FORMED (TTL: {state['ttl']})")
+                    if candle_range > 0:
+                        wick_size = c_high - max(c_open, c_close)
+                        wick_ratio = wick_size / candle_range
+                        
+                        lvl = state.get("active_sweep_level", 0.0)
+                        closed_below = c_close < lvl
+                        
+                        # Rejection criteria: wick >= 50% or body very small, closed below level, vol surge
+                        if wick_ratio >= 0.5 and closed_below and vol_surge:
+                            state["setup_state"] = "SHORT_SETUP_FORMED"
+                            state["setup_candle"] = current_candle
+                            state["ttl"] = 5
+                            if c_high > state["sweep_wick_extreme"]:
+                                state["sweep_wick_extreme"] = c_high
+                        else:
+                            if c_high > state["sweep_wick_extreme"]:
+                                state["sweep_wick_extreme"] = c_high
 
             elif setup_state == "SWEPT_LOW":
                 if is_green:
-                    # Fix 3: Setup candle quality check
                     candle_range = c_high - c_low
                     candle_body  = abs(c_close - c_open)
-                    body_ratio   = candle_body / candle_range if candle_range > 0 else 0
-                    thresholds = _get_regime_thresholds(state)
-                    if body_ratio < thresholds["min_body"]:
-                        print(f"[{symbol}] Setup candle REJECTED: body ratio {body_ratio:.2f} < {thresholds['min_body']:.2f} (weak/doji). State -> WAITING.")
-                        state["setup_state"] = "WAITING"
-                    else:
-                        state["setup_state"] = "LONG_SETUP_FORMED"
-                        state["setup_candle"] = current_candle
-                        state["ttl"] = thresholds["ttl"]
-                        print(f"[{symbol}] Green candle locked (body {body_ratio:.2f}). State -> LONG_SETUP_FORMED (TTL: {state['ttl']})")
+                    if candle_range > 0:
+                        wick_size = min(c_open, c_close) - c_low
+                        wick_ratio = wick_size / candle_range
+                        
+                        lvl = state.get("active_sweep_level", 0.0)
+                        closed_above = c_close > lvl
+                        
+                        if wick_ratio >= 0.5 and closed_above and vol_surge:
+                            state["setup_state"] = "LONG_SETUP_FORMED"
+                            state["setup_candle"] = current_candle
+                            state["ttl"] = 5
+                            if c_low < state["sweep_wick_extreme"]:
+                                state["sweep_wick_extreme"] = c_low
+                        else:
+                            if c_low < state["sweep_wick_extreme"]:
+                                state["sweep_wick_extreme"] = c_low
 
             elif setup_state == "SHORT_SETUP_FORMED":
-                # Decrement TTL on each closed candle (the trigger check itself is intrabar below)
                 state["ttl"] = state.get("ttl", 5) - 1
                 if state["ttl"] <= 0:
                     state["setup_state"] = "WAITING"
-                    state["swept_level_cooldown"][round(sweep_high, 1)] = len(history)
-                    print(f"[{symbol}] TTL Expired. No break occurred. State -> WAITING.")
 
             elif setup_state == "LONG_SETUP_FORMED":
                 state["ttl"] = state.get("ttl", 5) - 1
                 if state["ttl"] <= 0:
                     state["setup_state"] = "WAITING"
-                    state["swept_level_cooldown"][round(sweep_low, 1)] = len(history)
-                    print(f"[{symbol}] TTL Expired. No break occurred. State -> WAITING.")
 
-        # ── INTRABAR: Trigger check (Fix 2 — runs every tick, not just on candle close) ──
-        setup_state     = state.get("setup_state", "WAITING")
+        setup_state = state.get("setup_state", "WAITING")
         trigger_direction = None
 
-        # ── NEW: Intrabar 4H Touch Entry ──────────────────────────────
-        # Fires immediately on touch without waiting for sweep confirmation
-        if setup_state == "WAITING" and not state.get("intrabar_signal_taken"):
-            touched_high = current_candle["h"] >= sweep_high
-            touched_low  = current_candle["l"] <= sweep_low
-            
-            if touched_high and vol_surge and htf_bearish and not current_candle.get("is_closed"):
-                state["intrabar_signal_taken"] = True
-                state["setup_candle"] = current_candle
-                import uuid
-                strategy, _ = self._select_best_strategy(
-                    symbol, "SHORT", state, self.trade_data.get(symbol, {}),
-                    current_candle["h"], current_candle["l"], current_candle["c"], 0
-                )
-                await self._trigger_signal(symbol, "SHORT", current_candle, current_candle,
-                                           avg_vol, sweep_low, strategy, str(uuid.uuid4()), 1.0, entry_type="touch")
-                                           
-            elif touched_low and vol_surge and htf_bullish and not current_candle.get("is_closed"):
-                state["intrabar_signal_taken"] = True
-                state["setup_candle"] = current_candle
-                strategy, _ = self._select_best_strategy(
-                    symbol, "LONG", state, self.trade_data.get(symbol, {}),
-                    current_candle["h"], current_candle["l"], current_candle["c"], 0
-                )
-                await self._trigger_signal(symbol, "LONG", current_candle, current_candle,
-                                           avg_vol, sweep_high, strategy, str(uuid.uuid4()), 1.0, entry_type="touch")
-
+        # MSS (Market Structure Shift) Execution (INTRABAR OR CLOSE)
+        # We need a break of the most recent 1m swing low/high
         if setup_state == "SHORT_SETUP_FORMED" and not state.get("intrabar_signal_taken"):
-            setup_candle = state.get("setup_candle")
-            if setup_candle:
-                buffer_price = setup_candle["l"] * (1 - 0.0005)
-                thresholds = _get_regime_thresholds(state)
-                if current_candle["c"] < buffer_price:
-                    if not thresholds["require_vol"] or vol_surge:
-                        trigger_direction = "SHORT"
-                        state["setup_state"] = "TRADED_HIGH"
-                        state["intrabar_signal_taken"] = True
-                        print(f"[{symbol}] SHORT TRIGGERED INTRABAR! Price {current_candle['c']:.4f} < Buffer {buffer_price:.4f}")
-                    elif current_candle.get("is_closed", False):
-                        # Only invalidate on candle close — intrabar the candle may still develop volume
-                        print(f"[{symbol}] Failed SHORT: buffer broken but NO VOLUME SURGE at candle close. State -> WAITING.")
-                        state["setup_state"] = "WAITING"
+            m1_lows = state.get("1m_swing_lows", [])
+            recent_low = m1_lows[-1] if m1_lows else state.get("setup_candle", {}).get("l", 0) * 0.9995
+            if current_candle["c"] < recent_low:
+                trigger_direction = "SHORT"
+                state["setup_state"] = "TRADED_HIGH"
+                state["intrabar_signal_taken"] = True
 
         elif setup_state == "LONG_SETUP_FORMED" and not state.get("intrabar_signal_taken"):
-            setup_candle = state.get("setup_candle")
-            if setup_candle:
-                buffer_price = setup_candle["h"] * (1 + 0.0005)
-                thresholds = _get_regime_thresholds(state)
-                if current_candle["c"] > buffer_price:
-                    if not thresholds["require_vol"] or vol_surge:
-                        trigger_direction = "LONG"
-                        state["setup_state"] = "TRADED_LOW"
-                        state["intrabar_signal_taken"] = True
-                        print(f"[{symbol}] LONG TRIGGERED INTRABAR! Price {current_candle['c']:.4f} > Buffer {buffer_price:.4f}")
-                    elif current_candle.get("is_closed", False):
-                        print(f"[{symbol}] Failed LONG: buffer broken but NO VOLUME SURGE at candle close. State -> WAITING.")
-                        state["setup_state"] = "WAITING"
+            m1_highs = state.get("1m_swing_highs", [])
+            recent_high = m1_highs[-1] if m1_highs else state.get("setup_candle", {}).get("h", float('inf')) * 1.0005
+            if current_candle["c"] > recent_high:
+                trigger_direction = "LONG"
+                state["setup_state"] = "TRADED_LOW"
+                state["intrabar_signal_taken"] = True
 
         if trigger_direction:
-            # Apply user-facing filter toggles as global gates
             if self.filter_killzone and not in_any_session: return
             if self.filter_volume and not vol_surge: return
             if self.filter_pressure:
                 pressure = self.trade_data.get(symbol, {}).get("pressure_direction", "NEUTRAL")
                 if pressure == "NEUTRAL": return
 
-            # Fix 6: Daily volatility veto — on strong trend days, only trade WITH the trend
             if state.get("high_volatility_day"):
-                if trigger_direction == "SHORT" and not htf_bearish:
-                    print(f"[{symbol}] VETO: High-volatility day + counter-trend SHORT blocked.")
-                    return
-                if trigger_direction == "LONG" and not htf_bullish:
-                    print(f"[{symbol}] VETO: High-volatility day + counter-trend LONG blocked.")
-                    return
+                if trigger_direction == "SHORT" and not htf_bearish: return
+                if trigger_direction == "LONG" and not htf_bullish: return
 
-            # Fix 7: Funding rate directional bias — skip trades against the overcrowded side
             funding_rate = state.get("funding_rate", 0.0001)
-            EXTREME_FUNDING = 0.0003  # 0.03% per 8h is extreme
+            EXTREME_FUNDING = 0.0003
             if abs(funding_rate) > EXTREME_FUNDING:
-                if funding_rate > 0 and trigger_direction == "LONG":
-                    print(f"[{symbol}] FUNDING BIAS: Extreme positive rate ({funding_rate:.5f}). Skipping LONG.")
-                    return
-                if funding_rate < 0 and trigger_direction == "SHORT":
-                    print(f"[{symbol}] FUNDING BIAS: Extreme negative rate ({funding_rate:.5f}). Skipping SHORT.")
-                    return
-
+                if funding_rate > 0 and trigger_direction == "LONG": return
+                if funding_rate < 0 and trigger_direction == "SHORT": return
 
             import uuid
             setup_id = str(uuid.uuid4())
             setup_candle = state.get("setup_candle")
 
             regime = state.get("regime", "Chop")
-
-            # Orchestrator veto: block counter-cascade trades during strong liquidations
             if regime == "Liquidation Cascade":
-                if trigger_direction == "SHORT" and htf_bullish:
-                    print(f"[{symbol}] ORCHESTRATOR VETO: Blocked SHORT during Bullish Liquidation Cascade.")
-                    return
-                if trigger_direction == "LONG" and htf_bearish:
-                    print(f"[{symbol}] ORCHESTRATOR VETO: Blocked LONG during Bearish Liquidation Cascade.")
-                    return
+                if trigger_direction == "SHORT" and htf_bullish: return
+                if trigger_direction == "LONG" and htf_bearish: return
 
-            # Estimate SL distance for strategy scoring (approx from setup candle)
-            setup_candle_for_score = state.get("setup_candle")
-            if setup_candle_for_score and current_candle["c"] > 0:
-                if trigger_direction == "SHORT":
-                    dist_approx = (setup_candle_for_score["h"] - current_candle["c"]) / current_candle["c"]
-                else:
-                    dist_approx = (current_candle["c"] - setup_candle_for_score["l"]) / current_candle["c"]
-                dist_approx = max(dist_approx, 0.0001)
-            else:
-                dist_approx = 0.001
+            dist_approx = 0.001
 
-            # Smart strategy selection: score all strategies, pick best
             strategy, strategy_score = self._select_best_strategy(
                 symbol, trigger_direction, state,
                 self.trade_data.get(symbol, {}),
@@ -1239,126 +1179,67 @@ class LogicEngine:
 
             already_signaled = any(s.get("timestamp_ms") == current_candle["t"] and s.get("strategy") == strategy_name for s in self.signal_history)
             if not (already_signaled or is_historical):
+                valid = True
                 if trigger_direction == "SHORT":
-                    valid = True
                     if strategy["htf"] and not htf_bearish: valid = False
                     if self.filter_htf and not htf_bearish: valid = False
                     if strategy["atr_filter"] and c_high - c_low > price * 0.0015: valid = False
-                    if strategy["delta"]:
-                        current_delta = self.trade_data.get(symbol, {}).get("delta", 0)
-                        if current_delta > 0: valid = False
-                    if strategy["rsi"]:
-                        rsi = state.get("rsi_14", 50)
-                        if rsi > 60: valid = False
-                    if strategy["fvg"]:
-                        fvg = state.get("15m_fvg_bearish")
-                        if not fvg or not (fvg[0] <= c_high <= fvg[1]): valid = False
-
-                    if valid:
-                        stats = self.risk_engine.calculate_historical_stats(self.signal_history, strategy_name, "SHORT")
-                        ev = self.risk_engine.calculate_ev(stats["win_rate"], stats["avg_win"], stats["avg_loss"])
-                        n_trades = stats.get("n_trades", 0)
-                        if ev <= 0 and n_trades >= 15 and not is_historical:
-                            print(f"[{symbol}] EV VETO: EV is {ev:.4f} <= 0 (n={n_trades}). Blocking trade.")
-                        else:
-                            hmm_conf = state.get("regime_conf", 0.5)
-                            kelly_fraction = self.risk_engine.calculate_kelly_fraction(stats["win_rate"], stats["avg_win"], stats["avg_loss"], hmm_conf)
-                            await self._trigger_signal(symbol, "SHORT", current_candle, setup_candle, avg_vol, state["target_tp"], strategy, setup_id, kelly_fraction)
-
-                elif trigger_direction == "LONG":
-                    valid = True
+                    if strategy["delta"] and self.trade_data.get(symbol, {}).get("delta", 0) > 0: valid = False
+                else:
                     if strategy["htf"] and not htf_bullish: valid = False
                     if self.filter_htf and not htf_bullish: valid = False
                     if strategy["atr_filter"] and c_high - c_low > price * 0.0015: valid = False
-                    if strategy["delta"]:
-                        current_delta = self.trade_data.get(symbol, {}).get("delta", 0)
-                        if current_delta < 0: valid = False
-                    if strategy["rsi"]:
-                        rsi = state.get("rsi_14", 50)
-                        if rsi < 40: valid = False
-                    if strategy["fvg"]:
-                        fvg = state.get("15m_fvg_bullish")
-                        if not fvg or not (fvg[0] <= c_low <= fvg[1]): valid = False
+                    if strategy["delta"] and self.trade_data.get(symbol, {}).get("delta", 0) < 0: valid = False
 
-                    if valid:
-                        stats = self.risk_engine.calculate_historical_stats(self.signal_history, strategy_name, "LONG")
-                        ev = self.risk_engine.calculate_ev(stats["win_rate"], stats["avg_win"], stats["avg_loss"])
-                        n_trades = stats.get("n_trades", 0)
-                        if ev <= 0 and n_trades >= 15 and not is_historical:
-                            print(f"[{symbol}] EV VETO: EV is {ev:.4f} <= 0 (n={n_trades}). Blocking trade.")
-                        else:
-                            hmm_conf = state.get("regime_conf", 0.5)
-                            kelly_fraction = self.risk_engine.calculate_kelly_fraction(stats["win_rate"], stats["avg_win"], stats["avg_loss"], hmm_conf)
-                            await self._trigger_signal(symbol, "LONG", current_candle, setup_candle, avg_vol, state["target_tp"], strategy, setup_id, kelly_fraction)
+                if valid:
+                    stats = self.risk_engine.calculate_historical_stats(self.signal_history, strategy_name, trigger_direction)
+                    ev = self.risk_engine.calculate_ev(stats["win_rate"], stats["avg_win"], stats["avg_loss"])
+                    n_trades = stats.get("n_trades", 0)
+                    if not (ev <= 0 and n_trades >= 15 and not is_historical):
+                        hmm_conf = state.get("regime_conf", 0.5)
+                        kelly_fraction = self.risk_engine.calculate_kelly_fraction(stats["win_rate"], stats["avg_win"], stats["avg_loss"], hmm_conf)
+                        await self._trigger_signal(symbol, trigger_direction, current_candle, setup_candle, avg_vol, state["target_tp"], strategy, setup_id, kelly_fraction, entry_type="sweep")
 
-
-
-        # Reset EMA cross signal taken on new candle
         if current_candle.get("is_closed"):
             state["ema_cross_signal_taken"] = False
-
     async def _trigger_signal(self, symbol, direction, trigger_candle, setup_candle, avg_vol, target_tp, strategy=None, setup_id=None, kelly_fraction=1.0, entry_type="sweep"):
-        # Fix 10: Max concurrent positions limit — avoid over-exposure
-        # Per symbol limit
         MAX_PER_SYMBOL = 2
         MAX_TOTAL = 10
         open_symbol = sum(1 for s in self.signal_history if s.get("status") == "PENDING" and s.get("symbol") == symbol)
         open_total  = sum(1 for s in self.signal_history if s.get("status") == "PENDING")
         if open_symbol >= MAX_PER_SYMBOL or open_total >= MAX_TOTAL:
-            print(f"[{symbol}] POSITION LIMIT: {open_symbol} for symbol, {open_total} total. Skipping signal.")
             return
 
         if strategy is None:
-            strategy = {"name": "SA_Level_Scalp", "leverage": 50, "htf": False, "delta": False, "rsi": False, "time_exit": False, "fvg": False, "pre_liq": False, "cross_margin": False, "scale_out": False, "auto_lev": False, "atr_filter": False}
+            strategy = {"name": "SA_Level_Scalp", "leverage": 400, "scale_out": False, "fixed_tp_pct": True, "tp_pct": 0.0015}
         strategy_name = strategy["name"]
         
         trade_state = self.market_state.get(symbol, {})
         BUFFER = 0.0005 # 0.05% buffer
 
-        if entry_type == "touch":
-            sl_pct = strategy.get("sl_pct", 0.0012)
-            if direction == "SHORT":
-                base_sl = trigger_candle["c"] * (1 + sl_pct)
-            else:
-                base_sl = trigger_candle["c"] * (1 - sl_pct)
-            dist_pct = sl_pct
-        elif strategy.get("no_sl"):
-            if direction == "SHORT":
-                base_sl = trigger_candle["c"] * 1.5
-            else:
-                base_sl = trigger_candle["c"] * 0.5
-            dist_pct = abs(trigger_candle["c"] - base_sl) / trigger_candle["c"]
+        # Structural SL based on the wick extreme
+        wick_extreme = trade_state.get("sweep_wick_extreme", 0.0)
+        
+        if direction == "SHORT":
+            base_sl = wick_extreme * (1 + BUFFER) if wick_extreme > 0 else trigger_candle["c"] * (1 + 0.0020)
+            dist_pct = (base_sl - trigger_candle["c"]) / trigger_candle["c"]
         else:
-            if direction == "SHORT":
-                four_h_high = trade_state.get("4h_session_high", 0)
-                structure_sl = four_h_high * (1 + BUFFER) if four_h_high > 0 else setup_candle["h"]
-                base_sl = max(setup_candle["h"], structure_sl)
-                dist_pct = (base_sl - trigger_candle["c"]) / trigger_candle["c"]
-            else:
-                four_h_low = trade_state.get("4h_session_low", 0)
-                structure_sl = four_h_low * (1 - BUFFER) if four_h_low > 0 else setup_candle["l"]
-                base_sl = min(setup_candle["l"], structure_sl)
-                dist_pct = (trigger_candle["c"] - base_sl) / trigger_candle["c"]
-            
-        if strategy.get("pre_liq"):
-            # Force SL exactly 0.12% away to avoid 0.15% liquidation
-            dist_pct = 0.0012
-            if direction == "SHORT": base_sl = trigger_candle["c"] * (1 + 0.0012)
-            else: base_sl = trigger_candle["c"] * (1 - 0.0012)
-            
-        sl = base_sl
+            base_sl = wick_extreme * (1 - BUFFER) if wick_extreme > 0 else trigger_candle["c"] * (1 - 0.0020)
+            dist_pct = (trigger_candle["c"] - base_sl) / trigger_candle["c"]
 
-        # Fix 4: Minimum SL distance filter — fees eat trades with tight SL
-        # At 50x with 0.04% round-trip fees, need at least 0.08% to break even
+        sl = base_sl
+        
         MIN_SL_DISTANCE = 0.0008  # 0.08%
         if dist_pct < MIN_SL_DISTANCE and not strategy.get("no_sl"):
-            print(f"[{symbol}] TRADE REJECTED: SL distance {dist_pct*100:.4f}% < minimum 0.08%. Fees would consume profit.")
-            return
+            # We don't abort, we just pad the SL so we don't get chopped by fees
+            if direction == "SHORT":
+                sl = trigger_candle["c"] * (1 + MIN_SL_DISTANCE)
+            else:
+                sl = trigger_candle["c"] * (1 - MIN_SL_DISTANCE)
+            dist_pct = MIN_SL_DISTANCE
 
-        # Fix 11: Dynamic TP based on 15m swing structure — captures more on momentum days
-        trade_state = self.market_state.get(symbol, {})
-
-        # Fix 1: Apply 1:2 R:R as base, try to target 15m swing for a higher payout
+        # Dynamic TP based on Liquidity Targets
+        # The target_tp passed from _evaluate_1m_logic is the nearest unswept level
         if direction == "SHORT":
             risk = sl - trigger_candle["c"]
             if strategy.get("fixed_tp_pct"):
@@ -1366,21 +1247,8 @@ class LogicEngine:
                 tp = trigger_candle["c"] * (1 - tp_pct)
                 tp1 = trigger_candle["c"] * (1 - (tp_pct / 2.0))
             else:
-                fixed_2R_tp = trigger_candle["c"] - (2 * risk)
-                m15_target  = trade_state.get("15m_swing_low", 0)
-                if m15_target > 0 and m15_target < trigger_candle["c"] and risk > 0:
-                    potential_rr = (trigger_candle["c"] - m15_target) / risk
-                    if potential_rr >= 1.0:
-                        tp = m15_target
-                        print(f"[{symbol}] Dynamic TP: 15m swing low {tp:.4f} ({potential_rr:.1f}R)")
-                    else:
-                        tp = fixed_2R_tp
-                else:
-                    tp = fixed_2R_tp
-                if strategy.get("tp1_pct"):
-                    tp1 = trigger_candle["c"] * (1 - strategy["tp1_pct"])
-                else:
-                    tp1 = trigger_candle["c"] - risk  # Scale-out TP1 at 1R
+                tp = min(target_tp, trigger_candle["c"] - (1.5 * risk)) # At least 1.5R or the structural target
+                tp1 = trigger_candle["c"] - risk
         else:
             risk = trigger_candle["c"] - sl
             if strategy.get("fixed_tp_pct"):
@@ -1388,40 +1256,19 @@ class LogicEngine:
                 tp = trigger_candle["c"] * (1 + tp_pct)
                 tp1 = trigger_candle["c"] * (1 + (tp_pct / 2.0))
             else:
-                fixed_2R_tp = trigger_candle["c"] + (2 * risk)
-                m15_target  = trade_state.get("15m_swing_high", 0)
-                if m15_target > 0 and m15_target > trigger_candle["c"] and risk > 0:
-                    potential_rr = (m15_target - trigger_candle["c"]) / risk
-                    if potential_rr >= 1.0:
-                        tp = m15_target
-                        print(f"[{symbol}] Dynamic TP: 15m swing high {tp:.4f} ({potential_rr:.1f}R)")
-                    else:
-                        tp = fixed_2R_tp
-                else:
-                    tp = fixed_2R_tp
-                if strategy.get("tp1_pct"):
-                    tp1 = trigger_candle["c"] * (1 + strategy["tp1_pct"])
-                else:
-                    tp1 = trigger_candle["c"] + risk  # Scale-out TP1 at 1R
+                tp = max(target_tp, trigger_candle["c"] + (1.5 * risk))
+                tp1 = trigger_candle["c"] + risk
 
-        vol_ratio = setup_candle.get("v", 0) / avg_vol if (avg_vol > 0 and setup_candle) else 0
+        vol_ratio = trigger_candle.get("v", 0) / avg_vol if avg_vol > 0 else 0
 
         context = {
             "symbol": symbol,
             "direction": direction,
-            "price": trigger_candle["c"],
             "entry": trigger_candle["c"],
             "sl": sl,
             "tp": tp,
-            "1d_high": self.market_state[symbol].get("1d_high"),
-            "1d_low": self.market_state[symbol].get("1d_low"),
-            "4h_bullish": self.market_state[symbol].get("4h_bullish"),
-            "1d_bullish": self.market_state[symbol].get("1d_bullish"),
-            "vol_ratio": round(vol_ratio, 2)
         }
 
-        # Insight removed per user request
-        
         import uuid
         trade_id = str(uuid.uuid4())
 
@@ -1437,41 +1284,14 @@ class LogicEngine:
         }
         
         self.signals.append(signal)
-        print(f"SIGNAL TRIGGERED: {signal}")
+        logger.info(f"SIGNAL TRIGGERED: {signal}")
         
-        # For auto-leverage, compute actual leverage — capped at 50x (Fix 1)
-        if strategy["leverage"] == "auto":
+        if strategy.get("leverage") == "auto":
             computed_leverage = max(10, min(50, int((1.0 / dist_pct) * 0.8))) if dist_pct > 0 else 50
         else:
-            computed_leverage = int(strategy["leverage"])
+            computed_leverage = int(strategy.get("leverage", 400))
 
-        # Build strategy metric string
-        if strategy['name'] == 'S1_AutoLeverage':
-            strategy_metric = f"{computed_leverage}x Lev | SL: {(dist_pct*100):.2f}%"
-        elif strategy['name'] == 'S2_PreLiq_SL':
-            strategy_metric = f"SL: {(dist_pct*100):.2f}%"
-        elif strategy['name'] == 'S3_ATR_Filter':
-            strategy_metric = "Volatility Checked"
-        elif strategy['name'] == 'S4_CrossMargin':
-            strategy_metric = "Balance Protected"
-        elif strategy['name'] == 'S5_ScaleOut_BE':
-            strategy_metric = "ScaleOut Enabled"
-        elif strategy['name'] == 'S6_HTF_Aligned':
-            strategy_metric = "Trend Verified"
-        elif strategy['name'] == 'S7_Delta_Div':
-            strategy_metric = "Delta Confirmed"
-        elif strategy['name'] == 'S8_RSI_Div':
-            strategy_metric = "RSI Momentum Checked"
-        elif strategy['name'] == 'S9_TimeExit':
-            strategy_metric = "15m Timer Enabled"
-        elif strategy['name'] == 'S10_FVG_Conf':
-            strategy_metric = "FVG Confirmed"
-        elif strategy['name'] == 'SA_Level_Scalp':
-            strategy_metric = "0.15% Fixed TP"
-        elif strategy['name'] == 'SB_Level_Guardian':
-            strategy_metric = "75x Scale-Out"
-        else:
-            strategy_metric = "50x Static"
+        strategy_metric = f"{computed_leverage}x Lev | SL: {(dist_pct*100):.2f}%"
 
         hist_signal = {
             "id": trade_id,
@@ -1501,8 +1321,8 @@ class LogicEngine:
             "config": strategy,
             "computed_leverage": computed_leverage,
             "strategy_metric": strategy_metric,
-            "initial_margin": 5.0,
-            "margin": 5.0,
+            "initial_margin": 6.0,
+            "margin": 6.0,
             "avg_vol": avg_vol,
             "margin_adds": 0
         }
@@ -1510,19 +1330,19 @@ class LogicEngine:
         
         import asyncio
         import copy
-        asyncio.create_task(asyncio.to_thread(self.sheets_client.append_trade, copy.deepcopy(hist_signal)))
+        if hasattr(self, 'sheets_client'):
+            asyncio.create_task(asyncio.to_thread(self.sheets_client.append_trade, copy.deepcopy(hist_signal)))
         self._save_history()
         
         if self.shihab_active and self.mexc_client:
-            print(f"SHIHAB AUTO-TRADER is placing order for {symbol} {direction}")
+            logger.info(f"SHIHAB AUTO-TRADER is placing order for {symbol} {direction}")
             await self.mexc_client.submit_order(symbol, direction, context["entry"], sl, tp)
             
         if self.shihab_demo_active:
-            # Fix 10: Enforce demo position limit before opening a new virtual trade
+            MAX_CONCURRENT_POSITIONS = 10
             if len(self.demo_positions) >= MAX_CONCURRENT_POSITIONS:
-                print(f"[{symbol}] DEMO LIMIT: {len(self.demo_positions)} demo positions open >= max {MAX_CONCURRENT_POSITIONS}. Skipping demo entry.")
+                logger.warning(f"[{symbol}] DEMO LIMIT: {len(self.demo_positions)} demo positions open >= max {MAX_CONCURRENT_POSITIONS}.")
             else:
-                # Prevent opening if not enough balance
                 invest_amount = self.demo_invest_amount * kelly_fraction if kelly_fraction < 1.0 else self.demo_invest_amount
                 if self.demo_balance >= invest_amount:
                     demo_pos = {
@@ -1543,4 +1363,5 @@ class LogicEngine:
                         "timestamp_ms": trigger_candle["t"],
                     }
                     self.demo_positions.append(demo_pos)
-                    print(f"DEMO SHIHAB opened virtual {direction} on {symbol} with Margin ${self.demo_invest_amount} @ {computed_leverage}x")
+                    logger.info(f"DEMO SHIHAB opened virtual {direction} on {symbol} with Margin ${invest_amount} @ {computed_leverage}x")
+

@@ -62,7 +62,7 @@ class MEXCClient:
         side = 1 if direction == "LONG" else 3
         
         # Calculate contracts from $5 margin × leverage / contract price
-        contract_notional = 5.0 * float(strategy.get("leverage", 50)) if strategy else 5.0 * 50.0
+        contract_notional = 6.0 * float(strategy.get("leverage", 50)) if strategy else 6.0 * 50.0
         # For MEXC futures, as a safe default assuming 1 contract = 1 base unit:
         price_per_contract = entry 
         vol = max(1, int(contract_notional / price_per_contract))

@@ -9,6 +9,17 @@ import os
 import httpx
 import time
 import certifi
+import logging
+from dotenv import load_dotenv
+
+load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 from logic_engine import LogicEngine
 from mexc_client import MEXCClient
 
@@ -81,7 +92,7 @@ async def get_symbols():
                 cached_symbols = sorted(symbols)
                 cached_symbols_time = time.time()
     except Exception as e:
-        print(f"Error fetching symbols: {e}")
+        logger.error(f"Error fetching symbols: {e}")
     return {"symbols": cached_symbols}
 
 
@@ -120,11 +131,11 @@ async def websocket_endpoint(websocket: WebSocket):
             elif message.get("type") == "toggle_shihab":
                 enabled = message.get("enabled", False)
                 logic_engine.shihab_active = enabled
-                print(f"SHIHAB AUTO-TRADER is now {'ON' if enabled else 'OFF'}")
+                logger.info(f"SHIHAB AUTO-TRADER is now {'ON' if enabled else 'OFF'}")
             elif message.get("type") == "toggle_demo_shihab":
                 enabled = message.get("enabled", False)
                 logic_engine.shihab_demo_active = enabled
-                print(f"DEMO SHIHAB is now {'ON' if enabled else 'OFF'}")
+                logger.info(f"DEMO SHIHAB is now {'ON' if enabled else 'OFF'}")
             elif message.get("type") == "set_demo_invest":
                 amount = float(message.get("amount", 10.0))
                 logic_engine.demo_invest_amount = amount
@@ -137,7 +148,7 @@ async def websocket_endpoint(websocket: WebSocket):
         if websocket in active_connections:
             active_connections.remove(websocket)
     except Exception as e:
-        print(f"WebSocket error: {e}")
+        logger.error(f"WebSocket error: {e}")
         if websocket in active_connections:
             active_connections.remove(websocket)
 
@@ -155,7 +166,7 @@ async def broadcast_state():
                 try:
                     await connection.send_json(state)
                 except Exception as e:
-                    print(f"Error broadcasting: {e}")
+                    logger.error(f"Error broadcasting: {e}")
                     pass
         # Broadcast roughly every 1 second
         await asyncio.sleep(1)
@@ -165,7 +176,7 @@ frontend_path = os.path.join(os.path.dirname(__file__), "../frontend/dist")
 if os.path.exists(frontend_path):
     app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
 else:
-    print(f"Warning: Frontend build directory not found at {frontend_path}. You need to run 'npm run build' in the frontend folder.")
+    logger.warning(f"Frontend build directory not found at {frontend_path}. You need to run 'npm run build' in the frontend folder.")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))

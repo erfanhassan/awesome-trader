@@ -163,7 +163,7 @@ hist_new = """                config = hist_pos.get("config", {})
                 if config.get("cross_margin"):
                     # For signal history simulation, assume a virtual $1000 balance to avoid early liquidation
                     virtual_balance = 1000.0
-                    margin = 5.0
+                    margin = 6.0
                     config_lev = config.get("leverage", 400)
                     leverage = float(hist_pos.get("computed_leverage", config_lev if config_lev != "auto" else 400))
                     size = (margin * leverage) / hist_pos["entry"]
