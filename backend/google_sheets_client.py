@@ -16,7 +16,7 @@ class GoogleSheetsClient:
             "https://www.googleapis.com/auth/drive"
         ]
         self.credentials_path = credentials_path or os.getenv("GOOGLE_CREDENTIALS_PATH", "credentials.json")
-        self.sheet_id = sheet_id or os.getenv("GOOGLE_SHEET_ID", "1CfF5CZ9yMcp2tqsigHRKz0lA6B_3UKfwjGVU3b1ACmk")
+        self.sheet_id = sheet_id or os.getenv("GOOGLE_SHEET_ID", "YOUR_GOOGLE_SHEET_ID_HERE")
         self.client = None
         self.sheet = None
         self.enabled = False

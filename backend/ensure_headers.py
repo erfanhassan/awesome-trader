@@ -4,7 +4,7 @@ import os
 
 def ensure_headers_on_all():
     credentials_path = os.getenv("GOOGLE_CREDENTIALS_PATH", "credentials.json")
-    sheet_id = os.getenv("GOOGLE_SHEET_ID", "1CfF5CZ9yMcp2tqsigHRKz0lA6B_3UKfwjGVU3b1ACmk")
+    sheet_id = os.getenv("GOOGLE_SHEET_ID", "YOUR_GOOGLE_SHEET_ID_HERE")
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
