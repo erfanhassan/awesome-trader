@@ -61,7 +61,8 @@ class MEXCClient:
         # 1: Open Long, 2: Close Short, 3: Open Short, 4: Close Long
         side = 1 if direction == "LONG" else 3
         
-        # Calculate contracts from $5 margin × leverage / contract price
+        # Calculate contracts from margin × leverage / contract price
+        strategy = self.logic_engine.strategy if self.logic_engine else {}
         contract_notional = 6.0 * float(strategy.get("leverage", 50)) if strategy else 6.0 * 50.0
         # For MEXC futures, as a safe default assuming 1 contract = 1 base unit:
         price_per_contract = entry 
@@ -120,8 +121,8 @@ class MEXCClient:
 
     async def start(self):
         """Connect to MEXC via WS and polling."""
-        # Auto-add BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT on startup
-        default_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
+        # Auto-add BTCUSDT on startup
+        default_symbols = ["BTCUSDT"]
         for sym in default_symbols:
             if sym not in self.active_symbols:
                 self.active_symbols.add(sym)
