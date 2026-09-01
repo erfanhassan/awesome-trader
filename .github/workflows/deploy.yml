@@ -37,6 +37,7 @@ jobs:
               sudo git pull origin main
               cd frontend && sudo npm run build
               cd /opt/awesome-trader/backend && sudo .venv/bin/pip install -r requirements.txt -q
+              sudo rm -f /opt/awesome-trader/backend/trade_history.json
               sudo systemctl restart awesome-trader
               echo 'Deploy complete'
             "
