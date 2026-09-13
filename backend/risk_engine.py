@@ -19,8 +19,8 @@ class RiskEngine:
         win_rate = len(wins) / len(relevant_trades)
         
         # We look at raw percentages rather than absolute USD since size varies
-        avg_win = sum(t.get("pnl", 0) for t in wins) / len(wins) if wins else 1.5
-        avg_loss = abs(sum(t.get("pnl", 0) for t in losses) / len(losses)) if losses else 1.0
+        avg_win = sum(t.get("net_profit", 0) for t in wins) / len(wins) if wins else 1.5
+        avg_loss = abs(sum(t.get("net_profit", 0) for t in losses) / len(losses)) if losses else 1.0
         
         # Avoid division by zero
         if avg_loss == 0: avg_loss = 1.0
@@ -40,13 +40,13 @@ class RiskEngine:
         ev = (win_rate * avg_win) - (p_loss * avg_loss)
         return ev
 
-    def calculate_kelly_fraction(self, win_rate, avg_win, avg_loss, hmm_confidence):
+    def calculate_kelly_fraction(self, win_rate, avg_win, avg_loss):
         """
         f* = (bp - (1-p)) / b
         b = average win / average loss (the payoff ratio)
         p = probability of win
         Returns the optimal fraction of bankroll to risk.
-        We scale this down by the HMM confidence (Half-Kelly or Quarter-Kelly).
+        We scale this down to Half-Kelly.
         """
         b = avg_win / avg_loss
         if b == 0: return 0
@@ -55,8 +55,8 @@ class RiskEngine:
         
         if kelly <= 0: return 0
         
-        # Apply Half-Kelly scaled by confidence
-        safe_kelly = (kelly * 0.5) * hmm_confidence
+        # Apply Half-Kelly
+        safe_kelly = kelly * 0.5
         return max(0, min(safe_kelly, 1.0)) # Cap at 1.0 (100% of balance)
 
     def calculate_live_bayesian_update(self, prior_win_rate, current_delta, avg_delta, direction="LONG"):

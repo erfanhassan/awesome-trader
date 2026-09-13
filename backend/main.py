@@ -117,17 +117,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 if symbol:
                     await mexc_client.remove_symbol(symbol)
                     await logic_engine.remove_symbol(symbol)
-            elif message.get("type") == "set_filter":
-                filter_name = message.get("filter")
-                enabled = message.get("enabled", False)
-                if filter_name == "killzone":
-                    logic_engine.filter_killzone = enabled
-                elif filter_name == "htf":
-                    logic_engine.filter_htf = enabled
-                elif filter_name == "volume":
-                    logic_engine.filter_volume = enabled
-                elif filter_name == "pressure":
-                    logic_engine.filter_pressure = enabled
             elif message.get("type") == "toggle_shihab":
                 enabled = message.get("enabled", False)
                 logic_engine.shihab_active = enabled
@@ -139,11 +128,34 @@ async def websocket_endpoint(websocket: WebSocket):
             elif message.get("type") == "set_demo_invest":
                 amount = float(message.get("amount", 10.0))
                 logic_engine.demo_invest_amount = amount
+                logic_engine.strategy["fixed_risk_usd"] = amount
             elif message.get("type") == "set_demo_leverage":
                 leverage = int(message.get("leverage", 10))
                 logic_engine.demo_leverage = leverage
+            elif message.get("type") == "set_live_leverage":
+                leverage = int(message.get("leverage", 300))
+                logic_engine.set_live_leverage(leverage)
+                logger.info(f"Live leverage updated to {leverage}x via UI")
+            elif message.get("type") == "toggle_circuit_breaker":
+                enabled = message.get("enabled", True)
+                logic_engine.set_trading_paused(enabled)
+            elif message.get("type") == "toggle_regime_filter":
+                enabled = message.get("enabled", True)
+                logic_engine.set_regime_filter_enabled(enabled)
+            elif message.get("type") == "toggle_mean_reversion":
+                enabled = message.get("enabled", True)
+                logic_engine.set_mean_reversion_enabled(enabled)
             elif message.get("type") == "clear_history":
                 logic_engine.clear_history()
+            elif message.get("type") == "set_tp":
+                trade_id = message.get("trade_id")
+                new_tp = float(message.get("tp", 0))
+                if trade_id and new_tp > 0:
+                    logic_engine.set_trade_tp(trade_id, new_tp)
+            elif message.get("type") == "close_trade":
+                trade_id = message.get("trade_id")
+                if trade_id:
+                    await logic_engine.close_trade_now(trade_id)
     except WebSocketDisconnect:
         if websocket in active_connections:
             active_connections.remove(websocket)
@@ -161,6 +173,10 @@ async def broadcast_state():
             signals = logic_engine.get_and_clear_signals()
             if signals:
                 state["signals"] = signals
+
+            # Limit signal_history for WebSocket to prevent lag
+            if "signal_history" in state:
+                state["signal_history"] = state["signal_history"][-50:]
 
             for connection in active_connections:
                 try:

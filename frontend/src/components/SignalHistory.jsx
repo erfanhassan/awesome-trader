@@ -1,9 +1,26 @@
 import { useState } from 'react';
-import { Clock, CheckCircle2, XCircle, History, Trash2, Copy, Check } from 'lucide-react';
+import { Clock, CheckCircle2, XCircle, History, Trash2, Copy, Check, Target, LogOut, BookOpen } from 'lucide-react';
+import ExplainerModal from './ExplainerModal';
 
-const SignalHistory = ({ history, marketData, onClearHistory }) => {
+const SignalHistory = ({ history, marketData, onClearHistory, sendMessage }) => {
   const [selectedStrategy, setSelectedStrategy] = useState('ALL');
   const [copiedId, setCopiedId] = useState(null);
+  const [tpInputs, setTpInputs] = useState({});     // trade_id -> string input value
+  const [tpEditing, setTpEditing] = useState({});   // trade_id -> bool
+  const [closingId, setClosingId] = useState(null);  // trade being confirmed for close
+  const [explainerTrade, setExplainerTrade] = useState(null); // trade being explained
+
+  const handleSetTp = (tradeId) => {
+    const val = parseFloat(tpInputs[tradeId]);
+    if (!val || val <= 0) return;
+    sendMessage({ type: 'set_tp', trade_id: tradeId, tp: val });
+    setTpEditing(e => ({ ...e, [tradeId]: false }));
+  };
+
+  const handleCloseTrade = (tradeId) => {
+    sendMessage({ type: 'close_trade', trade_id: tradeId });
+    setClosingId(null);
+  };
 
   const handleCopyId = (id) => {
     if (!id) return;
@@ -29,6 +46,7 @@ const SignalHistory = ({ history, marketData, onClearHistory }) => {
   const sortedHistory = [...filteredHistory].reverse();
 
   return (
+    <>
     <div className="bg-slate-800 rounded-xl border border-slate-700 shadow-lg flex flex-col h-full max-h-[400px]">
       <div className="p-4 border-b border-slate-700 flex items-center justify-between bg-slate-800/50 rounded-t-xl">
         <div className="flex items-center gap-2 text-slate-200 font-bold">
@@ -72,10 +90,14 @@ const SignalHistory = ({ history, marketData, onClearHistory }) => {
             const currentPrice = marketData[trade.symbol].price;
             displayExitPrice = currentPrice;
             
+            const lev = trade.computed_leverage || 400;
+            const initialMargin = trade.initial_margin || trade.margin || 5.0;
+            const size = (initialMargin * lev) / trade.entry;
+            
             if (trade.direction === 'LONG') {
-              displayPnl = ((currentPrice - trade.entry) / trade.entry) * 100;
+              displayPnl = (currentPrice - trade.entry) * size;
             } else {
-              displayPnl = ((trade.entry - currentPrice) / trade.entry) * 100;
+              displayPnl = (trade.entry - currentPrice) * size;
             }
             
             if (displayPnl > 0) {
@@ -87,6 +109,9 @@ const SignalHistory = ({ history, marketData, onClearHistory }) => {
               isLoss = true;
               displayStatus = "LIVE LOSS";
             }
+          } else if (!isPending) {
+             // For closed trades, use net_profit if available
+             displayPnl = trade.net_profit !== undefined ? trade.net_profit : displayPnl;
           }
           
           return (
@@ -111,9 +136,19 @@ const SignalHistory = ({ history, marketData, onClearHistory }) => {
                     'text-amber-500'
                   }`}>
                     {displayStatus}
-                    {displayPnl !== 0 && ` (${displayPnl > 0 ? '+' : ''}${displayPnl.toFixed(2)}%)`}
+                    {displayPnl !== 0 && ` (${displayPnl > 0 ? '+$' : '-$'}${Math.abs(displayPnl).toFixed(2)})`}
                   </span>
                 </div>
+              </div>
+              
+              <div className="mb-2">
+                <button
+                  onClick={() => setExplainerTrade(trade)}
+                  className="w-full flex items-center justify-center gap-1.5 py-1.5 px-3 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/20 rounded-md transition-colors text-xs font-bold uppercase tracking-wider"
+                >
+                  <BookOpen size={14} />
+                  Explain Me
+                </button>
               </div>
 
               {/* Sheet ID Match Banner */}
@@ -156,11 +191,79 @@ const SignalHistory = ({ history, marketData, onClearHistory }) => {
                    <span>Live: {displayExitPrice?.toFixed(2)}</span>
                 )}
               </div>
+
+              {/* Manual Controls — only for PENDING trades */}
+              {isPending && sendMessage && (
+                <div className="mt-2 pt-2 border-t border-slate-700/60 flex items-center gap-2 flex-wrap">
+                  {/* Set TP */}
+                  {tpEditing[trade.id] ? (
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        step="any"
+                        placeholder="New TP price"
+                        value={tpInputs[trade.id] || ''}
+                        onChange={e => setTpInputs(v => ({ ...v, [trade.id]: e.target.value }))}
+                        className="text-[10px] w-28 bg-slate-950 border border-emerald-700 text-emerald-300 rounded px-2 py-0.5 outline-none font-mono"
+                        autoFocus
+                      />
+                      <button
+                        onClick={() => handleSetTp(trade.id)}
+                        className="text-[10px] px-2 py-0.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded transition-colors"
+                      >Set</button>
+                      <button
+                        onClick={() => setTpEditing(e => ({ ...e, [trade.id]: false }))}
+                        className="text-[10px] px-2 py-0.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded transition-colors"
+                      >Cancel</button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setTpEditing(e => ({ ...e, [trade.id]: true }))}
+                      className="text-[10px] flex items-center gap-1 px-2 py-0.5 bg-emerald-900/40 hover:bg-emerald-900/70 border border-emerald-700/50 text-emerald-400 rounded transition-colors"
+                      title="Override Take Profit"
+                    >
+                      <Target size={10} /> Set TP
+                    </button>
+                  )}
+
+                  {/* Exit Now */}
+                  {closingId === trade.id ? (
+                    <div className="flex items-center gap-1">
+                      <span className="text-[10px] text-rose-400">Sure?</span>
+                      <button
+                        onClick={() => handleCloseTrade(trade.id)}
+                        className="text-[10px] px-2 py-0.5 bg-rose-600 hover:bg-rose-500 text-white rounded transition-colors"
+                      >Yes, Exit</button>
+                      <button
+                        onClick={() => setClosingId(null)}
+                        className="text-[10px] px-2 py-0.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded transition-colors"
+                      >No</button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setClosingId(trade.id)}
+                      className="text-[10px] flex items-center gap-1 px-2 py-0.5 bg-rose-900/40 hover:bg-rose-900/70 border border-rose-700/50 text-rose-400 rounded transition-colors"
+                      title="Close trade at market price now"
+                    >
+                      <LogOut size={10} /> Exit Now
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}
+        {filteredHistory.length === 0 && (
+          <div className="text-center text-slate-500 text-sm py-4">
+            No trades match the selected strategy.
+          </div>
+        )}
       </div>
     </div>
+    {explainerTrade && (
+      <ExplainerModal trade={explainerTrade} onClose={() => setExplainerTrade(null)} />
+    )}
+    </>
   );
 };
 

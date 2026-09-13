@@ -3,22 +3,19 @@ import useWebSocketLib from 'react-use-websocket';
 
 export function useWebSocket(url) {
   const [state, setState] = useState({
-    killzone_active: false,
-    filter_killzone: false,
-    filter_htf: false,
-    filter_volume: false,
-    filter_pressure: false,
     shihab_active: false,
     shihab_demo_active: false,
     demo_state: {
       balance: 100,
-      invest_amount: 10,
-      leverage: 10,
+      invest_amount: 7,
+      leverage: 400,
       positions: []
     },
     market_data: {},
+    trade_data: {},
     signals: [],
     signal_history: [],
+    live_leverage: 400,
   });
   const [activeSymbol, setActiveSymbol] = useState("BTCUSDT");
 
@@ -35,17 +32,17 @@ export function useWebSocket(url) {
         if (data.market_data) {
           setState(prev => ({
             ...prev,
-            killzone_active: data.killzone_active,
-            filter_killzone: data.filter_killzone ?? prev.filter_killzone,
-            filter_htf: data.filter_htf ?? prev.filter_htf,
-            filter_volume: data.filter_volume ?? prev.filter_volume,
-            filter_pressure: data.filter_pressure ?? prev.filter_pressure,
             shihab_active: data.shihab_active ?? prev.shihab_active,
             shihab_demo_active: data.shihab_demo_active ?? prev.shihab_demo_active,
             demo_state: data.demo_state ?? prev.demo_state,
             market_data: data.market_data,
             trade_data: data.trade_data,
             signal_history: data.signal_history ?? prev.signal_history,
+            live_leverage: data.live_leverage ?? prev.live_leverage,
+            regime_filter_enabled: data.regime_filter_enabled ?? prev.regime_filter_enabled,
+            mean_reversion_active: data.mean_reversion_active ?? prev.mean_reversion_active,
+            trading_paused: data.trading_paused ?? prev.trading_paused,
+            hourly_reports: data.hourly_reports ?? prev.hourly_reports,
             signals: data.signals && data.signals.length > 0 ? [...prev.signals, ...data.signals].slice(-100) : prev.signals,
           }));
         }
@@ -84,12 +81,31 @@ export function useWebSocket(url) {
     sendMessage(JSON.stringify({ type: 'set_demo_leverage', leverage }));
   };
 
+  const setLiveLeverage = (leverage) => {
+    sendMessage(JSON.stringify({ type: 'set_live_leverage', leverage }));
+  };
+
+  const toggleCircuitBreaker = (enabled) => {
+    sendMessage(JSON.stringify({ type: 'toggle_circuit_breaker', enabled }));
+  };
+
+  const toggleRegimeFilter = (enabled) => {
+    sendMessage(JSON.stringify({ type: 'toggle_regime_filter', enabled }));
+  };
+
+  const toggleMeanReversion = (enabled) => {
+    sendMessage(JSON.stringify({ type: 'toggle_mean_reversion', enabled }));
+  };
+
   const clearHistory = () => {
     sendMessage(JSON.stringify({ type: 'clear_history' }));
   };
 
+  const sendMsg = (obj) => sendMessage(JSON.stringify(obj));
+
   return { 
-    state, readyState, addSymbol, removeSymbol, activeSymbol, setActiveSymbol, setFilter, 
-    toggleShihab, toggleDemoShihab, setDemoInvest, setDemoLeverage, clearHistory
+    state, readyState, addSymbol, removeSymbol, activeSymbol, setActiveSymbol, setFilter,
+    toggleShihab, toggleDemoShihab, toggleCircuitBreaker, toggleRegimeFilter, toggleMeanReversion, setDemoInvest, setDemoLeverage, setLiveLeverage, clearHistory,
+    sendMessage: sendMsg,
   };
 }

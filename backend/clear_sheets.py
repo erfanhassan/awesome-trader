@@ -1,6 +1,9 @@
 import gspread
 from google.oauth2.service_account import Credentials
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 def clear_all_sheets():
     credentials_path = os.getenv("GOOGLE_CREDENTIALS_PATH", "credentials.json")

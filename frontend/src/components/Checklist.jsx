@@ -69,11 +69,32 @@ export default function Checklist({ killzoneActive, symbolState, tradeState, fil
           <span>Active Sweep: {symbolState?.active_sweep_type ? <span className="text-amber-400">{symbolState.active_sweep_type}</span> : 'None'}</span>
           <span className="font-mono text-slate-300">{symbolState?.active_sweep_level ? `$${symbolState.active_sweep_level}` : '-'}</span>
         </div>
-        <div className="flex justify-between items-center text-xs">
-          <span>Premium Sweep:</span>
-          <span className={symbolState?.sweep_is_premium ? 'text-emerald-400' : 'text-slate-500'}>
-             {symbolState?.sweep_is_premium ? 'YES' : 'NO'}
-          </span>
+        
+        {/* ML & Probability Data */}
+        <div className="mt-2 pt-2 border-t border-slate-700/50 space-y-1">
+          <div className="flex justify-between items-center text-xs">
+            <span>Regime (HMM):</span>
+            <span className={`font-mono ${symbolState?.regime_reliable ? 'text-blue-400' : 'text-slate-500'}`}>
+               {symbolState?.regime || 'Unknown'} 
+               {symbolState?.regime_conf ? ` (${(symbolState.regime_conf * 100).toFixed(0)}%)` : ''}
+            </span>
+          </div>
+          
+          <div className="flex flex-col gap-1 mt-2 text-xs">
+            <div className="flex justify-between items-center">
+              <span>Next Candle Prob:</span>
+              <span className={symbolState?.prob_model_trained ? 'text-emerald-400' : 'text-amber-500'}>
+                 {symbolState?.prob_model_trained ? 'Trained' : 'Training...'}
+              </span>
+            </div>
+            {symbolState?.prob_up !== undefined && (
+              <div className="grid grid-cols-3 gap-1 text-[10px] text-center font-mono mt-1">
+                <div className="bg-emerald-950/50 text-emerald-400 py-1 rounded">UP: {(symbolState.prob_up * 100).toFixed(1)}%</div>
+                <div className="bg-slate-800 text-slate-400 py-1 rounded">FLAT: {(symbolState.prob_flat * 100).toFixed(1)}%</div>
+                <div className="bg-rose-950/50 text-rose-400 py-1 rounded">DN: {(symbolState.prob_down * 100).toFixed(1)}%</div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

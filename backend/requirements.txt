@@ -8,6 +8,4 @@ google-auth
 openai
 pandas
 python-dotenv
-
-hmmlearn
 scikit-learn

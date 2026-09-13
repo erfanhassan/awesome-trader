@@ -42,3 +42,10 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
+deploy.zip
+awesome-trader.tar.gz
+*.tar.gz
+*.zip
+results_30_scenarios.json
+*.b64
+remote_trade_history.json

@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { Wallet, Settings2 } from 'lucide-react';
 
 export default function DemoWallet({ demoState, setDemoInvest, setDemoLeverage }) {
-  const [investVal, setInvestVal] = useState(demoState?.invest_amount || 10);
-  const [levVal, setLevVal] = useState(demoState?.leverage || 10);
+  const [investVal, setInvestVal] = useState(demoState?.invest_amount || 7);
+  const [levVal, setLevVal] = useState(demoState?.leverage || 300);
 
   const handleApply = () => {
     setDemoInvest(parseFloat(investVal));
@@ -17,7 +17,7 @@ export default function DemoWallet({ demoState, setDemoInvest, setDemoLeverage }
     <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 space-y-6">
       <div className="flex items-center gap-3 border-b border-slate-700 pb-4">
         <Wallet className="text-purple-500" size={24} />
-        <h2 className="text-lg font-bold text-slate-100">Shihab Demo Wallet</h2>
+        <h2 className="text-lg font-bold text-slate-100">Trade Settings & Demo Wallet</h2>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
@@ -37,24 +37,27 @@ export default function DemoWallet({ demoState, setDemoInvest, setDemoLeverage }
           <Settings2 className="text-slate-400" size={16} />
           <h3 className="text-sm font-semibold text-slate-200">Demo Trade Settings</h3>
         </div>
-        
-        <div className="space-y-4">
-          <div>
-            <label className="block text-xs text-slate-400 mb-1">Margin per Trade (USDT)</label>
-            <div className="flex items-center gap-2">
-              <input
-                type="number"
-                className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-purple-500"
-                value={investVal}
-                onChange={(e) => setInvestVal(e.target.value)}
-                min="1"
-              />
-            </div>
-          </div>
-          
+
+        <div className="space-y-3">
           <div>
             <label className="flex justify-between text-xs text-slate-400 mb-1">
-              <span>Leverage</span>
+              <span>Demo Margin per Trade</span>
+              <span className="text-purple-400 font-bold">${investVal}</span>
+            </label>
+            <input
+              type="range"
+              min="1"
+              max="50"
+              step="1"
+              className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-purple-500"
+              value={investVal}
+              onChange={(e) => setInvestVal(e.target.value)}
+            />
+          </div>
+
+          <div>
+            <label className="flex justify-between text-xs text-slate-400 mb-1">
+              <span>Demo Leverage</span>
               <span className="text-purple-400 font-bold">{levVal}x</span>
             </label>
             <input
@@ -69,9 +72,9 @@ export default function DemoWallet({ demoState, setDemoInvest, setDemoLeverage }
 
           <button
             onClick={handleApply}
-            className="w-full mt-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-semibold py-2 rounded transition-colors"
+            className="w-full mt-2 bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold py-2 rounded transition-colors shadow-sm"
           >
-            Apply Settings
+            Apply Demo Settings
           </button>
         </div>
       </div>

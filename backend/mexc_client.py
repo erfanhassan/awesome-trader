@@ -50,8 +50,8 @@ class MEXCClient:
         text = self.access_key + timestamp + body_str
         return hmac.new(self.api_secret.encode('utf-8'), text.encode('utf-8'), hashlib.sha256).hexdigest()
 
-    async def submit_order(self, symbol: str, direction: str, entry: float, sl: float, tp: float):
-        """Submit a Market order with SL/TP to MEXC."""
+    async def submit_order(self, symbol: str, direction: str, entry: float, sl: float, tp: float, vol: int):
+        """Submit a Post-Only Limit order with SL/TP to MEXC."""
         if not self.access_key or not self.api_secret:
             logger.error("Missing API keys. Cannot submit order.")
             return None
@@ -60,20 +60,13 @@ class MEXCClient:
         
         # 1: Open Long, 2: Close Short, 3: Open Short, 4: Close Long
         side = 1 if direction == "LONG" else 3
-        
-        # Calculate contracts from margin × leverage / contract price
-        strategy = self.logic_engine.strategy if self.logic_engine else {}
-        contract_notional = 6.0 * float(strategy.get("leverage", 50)) if strategy else 6.0 * 50.0
-        # For MEXC futures, as a safe default assuming 1 contract = 1 base unit:
-        price_per_contract = entry 
-        vol = max(1, int(contract_notional / price_per_contract))
 
         payload = {
             "symbol": ws_symbol,
             "price": entry,
             "vol": vol,
             "side": side,
-            "type": 5, # 5: Market Order
+            "type": 6, # 6: Post Only Limit Order
             "openType": 2, # 2: Cross margin
             "stopLossPrice": sl,
             "takeProfitPrice": tp
@@ -102,6 +95,46 @@ class MEXCClient:
                 return result
             except Exception as e:
                 logger.error(f"Error submitting order: {e}")
+                return None
+
+    async def close_position(self, symbol: str, side: int, vol: int):
+        """Execute a Market order to partially or fully close a position."""
+        if not self.access_key or not self.api_secret:
+            logger.error("Missing API keys. Cannot submit close order.")
+            return None
+
+        ws_symbol = self._to_ws_symbol(symbol)
+        
+        payload = {
+            "symbol": ws_symbol,
+            "vol": vol,
+            "side": side,
+            "type": 5, # 5: Market Order
+            "openType": 2, # 2: Cross margin
+        }
+
+        body_str = json.dumps(payload)
+        timestamp = str(int(time.time() * 1000))
+        signature = self._generate_signature(timestamp, body_str)
+
+        headers = {
+            "ApiKey": self.access_key,
+            "Request-Time": timestamp,
+            "Signature": signature,
+            "Content-Type": "application/json"
+        }
+
+        url = f"{self.rest_base}/api/v1/private/order/submit"
+        logger.info(f"Submitting Market Close order for {ws_symbol}: {payload}")
+
+        async with httpx.AsyncClient(verify=certifi.where()) as client:
+            try:
+                resp = await client.post(url, headers=headers, content=body_str, timeout=10)
+                result = resp.json()
+                logger.info(f"Close order submit response: {result}")
+                return result
+            except Exception as e:
+                logger.error(f"Error submitting close order: {e}")
                 return None
 
     async def get_funding_rate(self, symbol: str) -> float:
